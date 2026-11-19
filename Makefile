@@ -1,5 +1,5 @@
 EE_BIN = punto-cero.elf
-EE_OBJS = src/net_ps2.o src/dev9_irx.o src/netman_irx.o src/smap_irx.o src/ps2_platform.o src/game.o src/sound.o src/assets_data.o src/models_data.o src/audsrv_irx.o src/sio2man_irx.o src/padman_irx.o src/libsd_irx.o
+EE_OBJS = src/main.o src/dev9_irx.o src/netman_irx.o src/smap_irx.o src/assets_data.o src/models_data.o src/audsrv_irx.o src/sio2man_irx.o src/padman_irx.o src/libsd_irx.o
 EE_CFLAGS += -DPC_ONLINE -DPS2_ONLINE
 EE_INCS += -I$(GSKIT)/include -I$(PS2SDK)/ports/include
 EE_LDFLAGS += -L$(GSKIT)/lib
