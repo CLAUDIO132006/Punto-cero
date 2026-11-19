@@ -11,6 +11,8 @@ jobs:
     container: ps2dev/ps2dev:latest
     steps:
       - uses: actions/checkout@v4
+      - name: Instalar herramientas
+        run: apk add --no-cache make build-base git
       - name: Compilar
         run: make clean all
       - name: Subir ELF
