@@ -5,15 +5,9 @@ EE_INCS += -I$(GSKIT)/include -I$(PS2SDK)/ports/include
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LIBS = -lgskit -ldmakit -lnetman -lps2ip -lpad -ldebug -laudsrv -lpatches -lm -lc -lkernel
 
-all: src/dev9_irx.c src/netman_irx.c src/smap_irx.c src/models_data.c src/sio2man_irx.c src/padman_irx.c src/libsd_irx.c src/assets_data.c $(EE_BIN)
+all: src/dev9_irx.c src/netman_irx.c src/smap_irx.c src/sio2man_irx.c src/padman_irx.c src/libsd_irx.c $(EE_BIN)
 
-# Los sonidos (assets/*.wav) se incrustan en el ELF. Para regenerarlos: make assets
-src/models_data.c: $(wildcard assets/models/*.obj) $(wildcard assets/models/*.mtl)
-	python3 tools/embed_models.py
-
-src/assets_data.c: $(wildcard assets/sounds/*.wav) $(wildcard assets/music/*.wav)
-	python3 tools/embed_assets.py assets src/assets_data.c
-
+# src/assets_data.c y src/models_data.c ya vienen generados (no hace falta python ni assets/ para compilar)
 assets:
 	gcc -O2 -w -Isrc -o export_assets tools/export_assets.c src/sound.c -lm && ./export_assets assets && rm -f export_assets
 	python3 tools/embed_assets.py assets src/assets_data.c
@@ -31,7 +25,7 @@ src/%_irx.c: $(PS2SDK)/iop/irx/%.irx
 	$(PS2SDK)/bin/bin2c $< $@ $*_irx
 
 clean:
-	rm -f $(EE_BIN) $(EE_OBJS) src/assets_data.c src/dev9_irx.c src/netman_irx.c src/smap_irx.c
+	rm -f $(EE_BIN) $(EE_OBJS) src/dev9_irx.c src/netman_irx.c src/smap_irx.c
 
 .PHONY: assets
 
