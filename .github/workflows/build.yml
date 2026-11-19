@@ -12,11 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Instalar herramientas
-        run: apk add --no-cache make build-base git
+        run: apk add --no-cache make build-base git python3
+      - name: Ver archivos
+        run: ls -R src assets tools | head -80
       - name: Compilar
         run: make clean all
       - name: Subir ELF
         uses: actions/upload-artifact@v4
         with:
           name: PUNTO_CERO-ELF
-          path: PUNTO_CERO.ELF
+          path: punto-cero.elf
