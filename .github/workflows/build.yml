@@ -14,7 +14,12 @@ jobs:
       - name: Instalar herramientas
         run: apk add --no-cache make build-base git python3
       - name: Ver archivos
-        run: ls -R src assets tools | head -80
+        run: |
+          pwd
+          ls -la
+          ls -la src || echo "NO EXISTE src"
+      - name: Crear carpeta src
+        run: mkdir -p src
       - name: Compilar
         run: make clean all
       - name: Subir ELF
