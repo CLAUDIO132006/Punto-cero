@@ -984,6 +984,15 @@ static void toView(float wx, float wy, float wz, float *x, float *y, float *z) {
 }
 
 #define NEAR 0.12f
+/* Descarte por objeto: devuelve 0 si la esfera esta entera detras de la camara o fuera del campo de vision (no se transforma ni se dibuja). */
+static int sphereVis(float wx, float wy, float wz, float r) {
+    float x, y, z; toView(wx, wy, wz, &x, &y, &z);
+    if (z + r < NEAR) return 0;
+    float lx = (SW * 0.5f) / camF, ly = (SH * 0.5f) / camF;
+    if (x - lx * z > r * sqrtf(1 + lx * lx) || -x - lx * z > r * sqrtf(1 + lx * lx)) return 0;
+    if (y - ly * z > r * sqrtf(1 + ly * ly) || -y - ly * z > r * sqrtf(1 + ly * ly)) return 0;
+    return 1;
+}
 static void emitPoly(V *in, int n, int overlay) {
     V out[12]; int m = 0;
     for (int i = 0; i < n; i++) {
@@ -1006,6 +1015,13 @@ static void emitPoly(V *in, int n, int overlay) {
         a[i].y = SH * 0.5f - out[i].y * iz * camF;
         a[i].z = overlay ? 16200000.0f + 50000.0f * iz : 16777000.0f * 0.1f * iz;   /* el arma y las manos siempre delante, ordenados por profundidad */
         a[i].r = out[i].r; a[i].g = out[i].g; a[i].b = out[i].b;
+    }
+    {   /* descarte: poligono entero fuera de la pantalla, o de area casi nula (de canto) */
+        float mnx = a[0].x, mxx = mnx, mny = a[0].y, mxy = mny, ar = 0;
+        for (int i = 1; i < m; i++) { if (a[i].x < mnx) mnx = a[i].x; if (a[i].x > mxx) mxx = a[i].x; if (a[i].y < mny) mny = a[i].y; if (a[i].y > mxy) mxy = a[i].y; }
+        if (mxx < 0 || mnx > SW || mxy < 0 || mny > SH) return;
+        for (int i = 0; i < m; i++) { int j = (i + 1) % m; ar += a[i].x * a[j].y - a[j].x * a[i].y; }
+        if (fabsf(ar) < 0.02f) return;
     }
     /* Recorte 2D contra la pantalla con margen: la GS solo admite coordenadas acotadas. */
     const float M = 128.0f, lim[4] = { -M, SW + M, -M, SH + M };
@@ -1046,6 +1062,7 @@ static const float FN[6][3] = { {-1,0,0}, {1,0,0}, {0,-1,0}, {0,1,0}, {0,0,-1}, 
 
 /* Caja orientada en el mundo (giro en Y). */
 static void obox(float cx, float cy, float cz, float hw, float hh, float hd, float yaw, u32c col) {
+    if (!sphereVis(cx, cy, cz, sqrtf(hw * hw + hh * hh + hd * hd))) return;
     float c[8][3], ys = sinf(yaw), yc = cosf(yaw);
     for (int i = 0; i < 8; i++) {
         float lx = (i & 1) ? hw : -hw, ly = (i & 2) ? hh : -hh, lz = (i & 4) ? hd : -hd;
@@ -1097,6 +1114,7 @@ static void vbox(float cx, float cy, float cz, float hw, float hh, float hd, u32
 static void drawFloor(void) {
     for (int i = 0; i < 12; i++) for (int j = 0; j < 12; j++) {
         float x0 = -HALF + i * 5, z0 = -HALF + j * 5;
+        if (!sphereVis(x0 + 2.5f, 0, z0 + 2.5f, 3.6f)) continue;
         float mx = x0 + 2.5f - camX, mz = z0 + 2.5f - camZ;
         float dist = sqrtf(mx * mx + mz * mz);
         u32c base = ((i + j) & 1) ? MAPS[curMap].floorB : MAPS[curMap].floorA;
@@ -1981,6 +1999,7 @@ static void botPart(const Bot *b, float lx, float ly, float lz, float hw, float 
 }
 /* Dibuja un soldado con piel por vertice. weap: 0 pistola (oculta el fusil y dibuja una pistola), 2 escopeta (madera), otros fusil. */
 static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, int weap, float wx, float wy, float wz, float yaw, float tr, float tg, float tb, float flash) {
+    if (!sphereVis(wx, wy + 0.9f, wz, 1.8f)) return;     /* fuera de la vista: no se transforma */
     static float tv[600][3];
     SkPose po; M34 G[BN_N];
     Rig gl = *g; gl.pist = (weap == 0); rigPose(&gl, &po);
@@ -2261,7 +2280,7 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
     float pitch = d->tilt[0] * k + kick * 0.7f, yaw = d->tilt[1] * k + 0.05f - swap * 0.4f, roll = d->tilt[2] * k - swap * 0.5f;
 #ifdef PS2_ONLINE
     /* apuntando: el arma pasa al centro y la mira queda a la altura del ojo; corriendo: arma baja y ladeada */
-    static const float ADSP[4][3] = { { 0, -0.122f, 0.46f }, { 0, -0.152f, 0.50f }, { 0, -0.148f, 0.50f }, { 0, -0.182f, 0.52f } };
+    static const float ADSP[4][3] = { { 0, -0.134f, 0.46f }, { 0, -0.200f, 0.50f }, { 0, -0.178f, 0.50f }, { 0, -0.212f, 0.52f } };   /* y mas bajo: el arma ya no tapa el centro de la pantalla */
     float ad = bfAds, sa = bfSprA; bobx *= 1 - 0.85f * ad; boby *= 1 - 0.85f * ad;
     yaw = yaw * (1 - ad) + 0.0f * ad + 0.32f * sa; pitch = pitch * (1 - 0.6f * ad) + (-0.30f) * sa; roll = roll * (1 - ad) + 0.25f * sa;
 #endif
@@ -2307,10 +2326,10 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
         wbox(0, 0.02f, 0.665f, 0.017f, 0.017f, 0.028f, RGBA(18, 19, 22, 255));
         for (int i = 0; i < 3; i++) wbox(0, 0.02f, 0.65f + i * 0.02f, 0.0185f, 0.0185f, 0.004f, GD);
         wbox(0, 0.070f, 0.10f, 0.027f, 0.011f, 0.04f, GD);
-        wbox(0, 0.108f, 0.10f, 0.031f, 0.031f, 0.035f, GM);
-        wbox(0, 0.108f, 0.0645f, 0.026f, 0.026f, 0.002f, RGBA(22, 44, 70, 255));
+        /* mira de punto rojo hueca: solo el marco, sin cristal ni caja solida, para ver a traves */
+        wbox(0, 0.136f, 0.10f, 0.031f, 0.004f, 0.035f, GM); wbox(0, 0.080f, 0.10f, 0.031f, 0.004f, 0.035f, GM);
+        wbox(-0.027f, 0.108f, 0.10f, 0.004f, 0.028f, 0.035f, GM); wbox(0.027f, 0.108f, 0.10f, 0.004f, 0.028f, 0.035f, GM);
         wbox(0, 0.115f, 0.0615f, 0.0035f, 0.0035f, 0.001f, RGBA(255, 70, 50, 255));
-        wbox(0, 0.108f, 0.136f, 0.026f, 0.026f, 0.002f, RGBA(24, 50, 80, 255));
         wbox(0, 0.142f, 0.10f, 0.02f, 0.006f, 0.03f, GD);
         wbox(0, -0.06f, -0.07f, 0.021f, 0.03f, 0.021f, GD); wbox(0, -0.095f, -0.082f, 0.022f, 0.03f, 0.023f, GD); wbox(0, -0.125f, -0.09f, 0.024f, 0.006f, 0.025f, GM);
         wbox(0, -0.052f, 0.045f, 0.004f, 0.006f, 0.05f, GM); wbox(0, -0.04f, -0.005f, 0.0035f, 0.014f, 0.004f, GL);
@@ -2383,7 +2402,7 @@ static void drawCross(void) {
         float spd = sqrtf(P.vx * P.vx + P.vz * P.vz);
         float sprd = W[wsel].spread * (1 + clampf(spd / 5, 0, 1) * 2.2f + (P.ground ? 0 : 3)) * (1 - 0.6f * bfAds) * (1 + bfBloom);
         gap = fminf(3 * t + sprd * camF, 34 * t); len = 5 * t;
-        if (bfAds > 0.6f) { gfx_rect(cx - 1.5f * t, cy - 1.5f * t, cx + 1.5f * t, cy + 1.5f * t, c); goto bf_hit; }
+        if (bfAds > 0.6f) { gfx_rect(cx - 2.6f * t, cy - 2.6f * t, cx + 2.6f * t, cy + 2.6f * t, RGBA(0, 0, 0, 150)); gfx_rect(cx - 1.5f * t, cy - 1.5f * t, cx + 1.5f * t, cy + 1.5f * t, c); goto bf_hit; }
     }
 #endif
     gfx_rect(cx - gap - len, cy - th, cx - gap, cy + th, c); gfx_rect(cx + gap, cy - th, cx + gap + len, cy + th, c);
@@ -3180,6 +3199,14 @@ static void init_iop(void) {
     sbv_patch_disable_prefix_check();
 }
 
+/* Reloj: registro Count del procesador (EE, 294,912 MHz) */
+#define EE_CPU_HZ 294912000.0f
+static inline unsigned cpu_count(void) {
+    unsigned c;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
+    return c;
+}
+
 int main(void) {
     init_scr();
     scr_printf("PUNTO CERO para PS2 - arrancando\n\n  Reiniciando el IOP ...");
@@ -3190,10 +3217,17 @@ int main(void) {
     scr_printf("  Iniciando video ...\n");
     gfx_init();
     game_init();
+    unsigned last = cpu_count();
     for (;;) {
         Pad p;
         pad_poll(&p);
-        game_frame(&p, 1.0f / 60.0f);
+        /* tiempo real del cuadro anterior: si los fps bajan a 30 el juego sigue a la misma velocidad */
+        unsigned now = cpu_count();
+        float dt = (float)(unsigned)(now - last) / EE_CPU_HZ;
+        last = now;
+        if (dt < 0.005f) dt = 0.005f;
+        if (dt > 0.05f) dt = 0.05f;      /* tope: evita saltos enormes si hay una pausa larga (carga, etc.) */
+        game_frame(&p, dt);
         audio_pump();
     }
     return 0;
