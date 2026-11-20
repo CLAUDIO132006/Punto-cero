@@ -2441,6 +2441,171 @@ static void voxBuild(void) {
         voxM[k].nv = nv; voxM[k].nf = nf; voxM[k].v = vxV[k]; voxM[k].f = vxF[k]; voxM[k].c = vxC[k]; voxM[k].p = vxP[k]; voxM[k].vb = vxB[k];
     }
 }
+/* ---------- Pistola HK VP70 de baja poligonizacion ----------
+ * Generada a partir de low-poly_hk_vp70m.glb (5555 triangulos, 13 piezas, con culata): se quito la culata y se reconstruyo
+ * el marco extruyendo su silueta lateral (guardamonte incluido), la corredera como prisma con la nariz achaflanada,
+ * mas gatillo, miras, estrias y ventana como cuadrilateros. Todo en colores planos, sin texturas.
+ *   VPM: 218 triangulos (primera persona; la placa del cargador va al final y se oculta al recargar)
+ *   VPL:  72 triangulos (soldados a menos de 18 m; mas lejos se usan 3 cajas)
+ * Espacio: x derecha, y arriba, z adelante (boca en +z), el mismo que usa wbox() en primera persona.
+ * Colores de VPM_C: 0 corredera, 1 marco, 2 gatillo/placa, 3 estrias, 4 miras. VPL_C: 0 corredera, 1 marco. */
+#define VPM_NV 160
+#define VPM_NT 218
+#define VPM_NTB 206    /* triangulos del cuerpo; el resto es la placa del cargador */
+static const float VPM_V[VPM_NV * 3] = {   /* x derecha, y arriba, z adelante (boca en +z), mismo espacio que wbox */
+    -0.0187f, -0.0051f, -0.1024f, -0.0187f, 0.0000f, -0.0982f, -0.0187f, -0.0059f, -0.0939f,
+    -0.0187f, -0.0148f, -0.0502f, -0.0187f, -0.0514f, -0.0536f, -0.0187f, -0.0930f, -0.0757f,
+    -0.0187f, -0.1615f, -0.0973f, -0.0187f, -0.1598f, -0.0115f, -0.0187f, -0.0612f, 0.0191f,
+    -0.0187f, -0.0586f, 0.1237f, -0.0187f, -0.0471f, 0.1360f, -0.0187f, -0.0123f, 0.1454f,
+    -0.0187f, 0.0034f, 0.1891f, -0.0187f, 0.0166f, 0.1896f, -0.0187f, 0.0166f, -0.1029f,
+    -0.0187f, -0.0174f, 0.0527f, -0.0187f, -0.0093f, 0.0625f, -0.0187f, -0.0093f, 0.1152f,
+    -0.0187f, -0.0191f, 0.1292f, -0.0187f, -0.0344f, 0.1335f, -0.0187f, -0.0463f, 0.1301f,
+    -0.0187f, -0.0561f, 0.1160f, -0.0187f, -0.0518f, 0.0956f, -0.0187f, -0.0561f, 0.0922f,
+    -0.0187f, -0.0561f, 0.0667f, -0.0187f, -0.0454f, 0.0527f, -0.0187f, -0.0293f, 0.0493f,
+    0.0187f, -0.0051f, -0.1024f, 0.0187f, 0.0000f, -0.0982f, 0.0187f, -0.0059f, -0.0939f,
+    0.0187f, -0.0148f, -0.0502f, 0.0187f, -0.0514f, -0.0536f, 0.0187f, -0.0930f, -0.0757f,
+    0.0187f, -0.1615f, -0.0973f, 0.0187f, -0.1598f, -0.0115f, 0.0187f, -0.0612f, 0.0191f,
+    0.0187f, -0.0586f, 0.1237f, 0.0187f, -0.0471f, 0.1360f, 0.0187f, -0.0123f, 0.1454f,
+    0.0187f, 0.0034f, 0.1891f, 0.0187f, 0.0166f, 0.1896f, 0.0187f, 0.0166f, -0.1029f,
+    0.0187f, -0.0174f, 0.0527f, 0.0187f, -0.0093f, 0.0625f, 0.0187f, -0.0093f, 0.1152f,
+    0.0187f, -0.0191f, 0.1292f, 0.0187f, -0.0344f, 0.1335f, 0.0187f, -0.0463f, 0.1301f,
+    0.0187f, -0.0561f, 0.1160f, 0.0187f, -0.0518f, 0.0956f, 0.0187f, -0.0561f, 0.0922f,
+    0.0187f, -0.0561f, 0.0667f, 0.0187f, -0.0454f, 0.0527f, 0.0187f, -0.0293f, 0.0493f,
+    -0.0208f, 0.0060f, -0.1020f, 0.0208f, 0.0060f, -0.1020f, 0.0208f, 0.0502f, -0.1020f,
+    0.0140f, 0.0570f, -0.1020f, -0.0140f, 0.0570f, -0.1020f, -0.0208f, 0.0502f, -0.1020f,
+    -0.0208f, 0.0060f, 0.1955f, 0.0208f, 0.0060f, 0.1955f, 0.0208f, 0.0502f, 0.1955f,
+    0.0140f, 0.0570f, 0.1955f, -0.0140f, 0.0570f, 0.1955f, -0.0208f, 0.0502f, 0.1955f,
+    -0.0170f, 0.0272f, 0.2253f, 0.0170f, 0.0272f, 0.2253f, 0.0170f, 0.0519f, 0.2253f,
+    0.0119f, 0.0570f, 0.2253f, -0.0119f, 0.0570f, 0.2253f, -0.0170f, 0.0519f, 0.2253f,
+    -0.0060f, -0.0569f, 0.0429f, -0.0060f, -0.0539f, 0.1029f, -0.0060f, -0.0395f, 0.0697f,
+    -0.0060f, -0.0225f, 0.0697f, -0.0060f, -0.0085f, 0.0897f, -0.0060f, -0.0089f, 0.0425f,
+    0.0060f, -0.0569f, 0.0429f, 0.0060f, -0.0539f, 0.1029f, 0.0060f, -0.0395f, 0.0697f,
+    0.0060f, -0.0225f, 0.0697f, 0.0060f, -0.0085f, 0.0897f, 0.0060f, -0.0089f, 0.0425f,
+    -0.0102f, 0.0561f, -0.0744f, -0.0102f, 0.0561f, -0.0531f, -0.0102f, 0.0646f, -0.0744f,
+    -0.0102f, 0.0646f, -0.0531f, 0.0102f, 0.0561f, -0.0744f, 0.0102f, 0.0561f, -0.0531f,
+    0.0102f, 0.0646f, -0.0744f, 0.0102f, 0.0646f, -0.0531f, -0.0030f, 0.0561f, 0.1934f,
+    -0.0030f, 0.0561f, 0.2146f, -0.0030f, 0.0646f, 0.1934f, -0.0030f, 0.0646f, 0.2146f,
+    0.0030f, 0.0561f, 0.1934f, 0.0030f, 0.0561f, 0.2146f, 0.0030f, 0.0646f, 0.1934f,
+    0.0030f, 0.0646f, 0.2146f, -0.0162f, -0.1683f, -0.0893f, -0.0162f, -0.1683f, 0.0043f,
+    -0.0162f, -0.1606f, -0.0893f, -0.0162f, -0.1606f, 0.0043f, 0.0162f, -0.1683f, -0.0893f,
+    0.0162f, -0.1683f, 0.0043f, 0.0162f, -0.1606f, -0.0893f, 0.0162f, -0.1606f, 0.0043f,
+    -0.0215f, 0.0187f, -0.0871f, -0.0215f, 0.0187f, -0.0799f, -0.0215f, 0.0493f, -0.0799f,
+    -0.0215f, 0.0493f, -0.0871f, -0.0215f, 0.0187f, -0.0718f, -0.0215f, 0.0187f, -0.0646f,
+    -0.0215f, 0.0493f, -0.0646f, -0.0215f, 0.0493f, -0.0718f, -0.0215f, 0.0187f, -0.0565f,
+    -0.0215f, 0.0187f, -0.0493f, -0.0215f, 0.0493f, -0.0493f, -0.0215f, 0.0493f, -0.0565f,
+    -0.0215f, 0.0187f, -0.0412f, -0.0215f, 0.0187f, -0.0340f, -0.0215f, 0.0493f, -0.0340f,
+    -0.0215f, 0.0493f, -0.0412f, -0.0215f, 0.0187f, -0.0259f, -0.0215f, 0.0187f, -0.0187f,
+    -0.0215f, 0.0493f, -0.0187f, -0.0215f, 0.0493f, -0.0259f, -0.0193f, -0.0501f, 0.0404f,
+    -0.0193f, -0.0501f, 0.0510f, -0.0193f, -0.0395f, 0.0510f, -0.0193f, -0.0395f, 0.0404f,
+    0.0215f, 0.0187f, -0.0871f, 0.0215f, 0.0187f, -0.0799f, 0.0215f, 0.0493f, -0.0799f,
+    0.0215f, 0.0493f, -0.0871f, 0.0215f, 0.0187f, -0.0718f, 0.0215f, 0.0187f, -0.0646f,
+    0.0215f, 0.0493f, -0.0646f, 0.0215f, 0.0493f, -0.0718f, 0.0215f, 0.0187f, -0.0565f,
+    0.0215f, 0.0187f, -0.0493f, 0.0215f, 0.0493f, -0.0493f, 0.0215f, 0.0493f, -0.0565f,
+    0.0215f, 0.0187f, -0.0412f, 0.0215f, 0.0187f, -0.0340f, 0.0215f, 0.0493f, -0.0340f,
+    0.0215f, 0.0493f, -0.0412f, 0.0215f, 0.0187f, -0.0259f, 0.0215f, 0.0187f, -0.0187f,
+    0.0215f, 0.0493f, -0.0187f, 0.0215f, 0.0493f, -0.0259f, 0.0193f, -0.0501f, 0.0404f,
+    0.0193f, -0.0501f, 0.0510f, 0.0193f, -0.0395f, 0.0510f, 0.0193f, -0.0395f, 0.0404f,
+    0.0215f, 0.0209f, 0.0298f, 0.0215f, 0.0209f, 0.1148f, 0.0215f, 0.0442f, 0.1148f,
+    0.0215f, 0.0442f, 0.0298f,
+};
+static const unsigned char VPM_T[VPM_NT * 3] = {
+    41, 28, 27, 14, 0, 1, 41, 29, 28, 14, 1, 2, 41, 30, 29, 14, 2, 3, 31, 33, 32, 4, 5, 6,
+    31, 34, 33, 4, 6, 7, 30, 34, 31, 3, 4, 7, 30, 35, 34, 3, 7, 8, 37, 47, 46, 10, 19, 20,
+    36, 47, 37, 9, 10, 20, 36, 48, 47, 9, 20, 21, 35, 48, 36, 8, 9, 21, 48, 50, 49, 21, 22, 23,
+    35, 50, 48, 8, 21, 23, 35, 51, 50, 8, 23, 24, 30, 51, 35, 3, 8, 24, 41, 51, 30, 14, 3, 24,
+    41, 52, 51, 14, 24, 25, 41, 53, 52, 14, 25, 26, 41, 42, 53, 14, 26, 15, 41, 43, 42, 14, 15, 16,
+    41, 44, 43, 14, 16, 17, 46, 38, 37, 19, 10, 11, 45, 38, 46, 18, 19, 11, 44, 38, 45, 17, 18, 11,
+    41, 38, 44, 14, 17, 11, 41, 39, 38, 14, 11, 12, 39, 41, 40, 12, 13, 14, 0, 28, 1, 0, 27, 28,
+    1, 29, 2, 1, 28, 29, 2, 30, 3, 2, 29, 30, 3, 31, 4, 3, 30, 31, 4, 32, 5, 4, 31, 32,
+    5, 33, 6, 5, 32, 33, 6, 34, 7, 6, 33, 34, 7, 35, 8, 7, 34, 35, 8, 36, 9, 8, 35, 36,
+    9, 37, 10, 9, 36, 37, 10, 38, 11, 10, 37, 38, 11, 39, 12, 11, 38, 39, 12, 40, 13, 12, 39, 40,
+    13, 41, 14, 13, 40, 41, 14, 27, 0, 14, 41, 27, 15, 43, 16, 15, 42, 43, 16, 44, 17, 16, 43, 44,
+    17, 45, 18, 17, 44, 45, 18, 46, 19, 18, 45, 46, 19, 47, 20, 19, 46, 47, 20, 48, 21, 20, 47, 48,
+    21, 49, 22, 21, 48, 49, 22, 50, 23, 22, 49, 50, 23, 51, 24, 23, 50, 51, 24, 52, 25, 24, 51, 52,
+    25, 53, 26, 25, 52, 53, 26, 42, 15, 26, 53, 42, 54, 55, 61, 54, 61, 60, 55, 56, 62, 55, 62, 61,
+    56, 57, 63, 56, 63, 62, 57, 58, 64, 57, 64, 63, 58, 59, 65, 58, 65, 64, 59, 54, 60, 59, 60, 65,
+    60, 61, 67, 60, 67, 66, 61, 62, 68, 61, 68, 67, 62, 63, 69, 62, 69, 68, 63, 64, 70, 63, 70, 69,
+    64, 65, 71, 64, 71, 70, 65, 60, 66, 65, 66, 71, 54, 56, 55, 54, 57, 56, 54, 58, 57, 54, 59, 58,
+    66, 67, 68, 66, 68, 69, 66, 69, 70, 66, 70, 71, 78, 80, 79, 72, 73, 74, 83, 80, 78, 77, 72, 74,
+    83, 81, 80, 77, 74, 75, 81, 83, 82, 75, 76, 77, 72, 79, 73, 72, 78, 79, 73, 80, 74, 73, 79, 80,
+    74, 81, 75, 74, 80, 81, 75, 82, 76, 75, 81, 82, 76, 83, 77, 76, 82, 83, 77, 78, 72, 77, 83, 78,
+    84, 87, 86, 84, 85, 87, 88, 91, 89, 88, 90, 91, 86, 91, 90, 86, 87, 91, 84, 90, 88, 84, 86, 90,
+    85, 91, 87, 85, 89, 91, 92, 95, 94, 92, 93, 95, 96, 99, 97, 96, 98, 99, 94, 99, 98, 94, 95, 99,
+    92, 98, 96, 92, 94, 98, 93, 99, 95, 93, 97, 99, 108, 109, 110, 108, 110, 111, 112, 113, 114, 112, 114, 115,
+    116, 117, 118, 116, 118, 119, 120, 121, 122, 120, 122, 123, 124, 125, 126, 124, 126, 127, 128, 129, 130, 128, 130, 131,
+    132, 134, 133, 132, 135, 134, 136, 138, 137, 136, 139, 138, 140, 142, 141, 140, 143, 142, 144, 146, 145, 144, 147, 146,
+    148, 150, 149, 148, 151, 150, 152, 154, 153, 152, 155, 154, 156, 158, 157, 156, 159, 158, 100, 103, 102, 100, 101, 103,
+    104, 107, 105, 104, 106, 107, 100, 105, 101, 100, 104, 105, 102, 107, 106, 102, 103, 107, 100, 106, 104, 100, 102, 106,
+    101, 107, 103, 101, 105, 107,
+};
+static const unsigned char VPM_C[VPM_NT] = {
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+};
+
+
+#define VPL_NV 38
+#define VPL_NT 72
+#define VPL_NTB 72    /* triangulos del cuerpo; el resto es la placa del cargador */
+static const float VPL_V[VPL_NV * 3] = {   /* mismo espacio; version corta para soldados */
+    -0.0187f, -0.0051f, -0.1024f, -0.0187f, -0.0148f, -0.0502f, -0.0187f, -0.1615f, -0.0973f,
+    -0.0187f, -0.1598f, -0.0115f, -0.0187f, -0.0612f, 0.0191f, -0.0187f, -0.0586f, 0.1237f,
+    -0.0187f, -0.0123f, 0.1454f, -0.0187f, 0.0166f, 0.1896f, -0.0187f, 0.0166f, -0.1029f,
+    -0.0187f, -0.0093f, 0.0625f, -0.0187f, -0.0093f, 0.1152f, -0.0187f, -0.0344f, 0.1335f,
+    -0.0187f, -0.0561f, 0.1160f, -0.0187f, -0.0561f, 0.0667f, -0.0187f, -0.0293f, 0.0493f,
+    0.0187f, -0.0051f, -0.1024f, 0.0187f, -0.0148f, -0.0502f, 0.0187f, -0.1615f, -0.0973f,
+    0.0187f, -0.1598f, -0.0115f, 0.0187f, -0.0612f, 0.0191f, 0.0187f, -0.0586f, 0.1237f,
+    0.0187f, -0.0123f, 0.1454f, 0.0187f, 0.0166f, 0.1896f, 0.0187f, 0.0166f, -0.1029f,
+    0.0187f, -0.0093f, 0.0625f, 0.0187f, -0.0093f, 0.1152f, 0.0187f, -0.0344f, 0.1335f,
+    0.0187f, -0.0561f, 0.1160f, 0.0187f, -0.0561f, 0.0667f, 0.0187f, -0.0293f, 0.0493f,
+    -0.0208f, 0.0060f, -0.1020f, 0.0208f, 0.0060f, -0.1020f, 0.0208f, 0.0570f, -0.1020f,
+    -0.0208f, 0.0570f, -0.1020f, -0.0191f, 0.0166f, 0.2253f, 0.0191f, 0.0166f, 0.2253f,
+    0.0191f, 0.0570f, 0.2253f, -0.0191f, 0.0570f, 0.2253f,
+};
+static const unsigned char VPL_T[VPL_NT * 3] = {
+    23, 16, 15, 8, 0, 1, 16, 18, 17, 1, 2, 3, 16, 19, 18, 1, 3, 4, 20, 26, 21, 5, 6, 11,
+    20, 27, 26, 5, 11, 12, 19, 27, 20, 4, 5, 12, 19, 28, 27, 4, 12, 13, 16, 28, 19, 1, 4, 13,
+    23, 28, 16, 8, 1, 13, 23, 29, 28, 8, 13, 14, 23, 24, 29, 8, 14, 9, 23, 25, 24, 8, 9, 10,
+    25, 21, 26, 10, 11, 6, 23, 21, 25, 8, 10, 6, 21, 23, 22, 6, 7, 8, 0, 16, 1, 0, 15, 16,
+    1, 17, 2, 1, 16, 17, 2, 18, 3, 2, 17, 18, 3, 19, 4, 3, 18, 19, 4, 20, 5, 4, 19, 20,
+    5, 21, 6, 5, 20, 21, 6, 22, 7, 6, 21, 22, 7, 23, 8, 7, 22, 23, 8, 15, 0, 8, 23, 15,
+    9, 25, 10, 9, 24, 25, 10, 26, 11, 10, 25, 26, 11, 27, 12, 11, 26, 27, 12, 28, 13, 12, 27, 28,
+    13, 29, 14, 13, 28, 29, 14, 24, 9, 14, 29, 24, 30, 31, 35, 30, 35, 34, 31, 32, 36, 31, 36, 35,
+    32, 33, 37, 32, 37, 36, 33, 30, 34, 33, 34, 37, 30, 32, 31, 30, 33, 32, 34, 35, 36, 34, 36, 37,
+};
+static const unsigned char VPL_C[VPL_NT] = {
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+};
+/* soldados: el espacio del arma pasa al hueso BN_WEAP girado 180 grados en Y (rotacion propia: el sentido de los triangulos se conserva) */
+static void vpDrawRig(const M34 *wm) {
+    float tv[VPL_NV][3];
+    for (int i = 0; i < VPL_NV; i++) {
+        float lp[3] = { 0.17f - VPL_V[i * 3], 1.111f + VPL_V[i * 3 + 1], -0.395f - VPL_V[i * 3 + 2] };
+        m34Xf(wm, lp, tv[i]);
+    }
+    const float *m = wm->m;
+    float det = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) + m[2] * (m[4] * m[9] - m[5] * m[8]), sg = det < 0 ? -1.0f : 1.0f;
+    static const u32c pal[2] = { RGBA(48, 50, 55, 255), RGBA(30, 31, 34, 255) };
+    for (int t = 0; t < VPL_NT; t++) {
+        const float *a = tv[VPL_T[t * 3]], *b = tv[VPL_T[t * 3 + 1]], *c = tv[VPL_T[t * 3 + 2]];
+        float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+        float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, nl = sqrtf(nx * nx + ny * ny + nz * nz);
+        if (nl < 1e-9f) continue;
+        nl = sg / nl; nx *= nl; ny *= nl; nz *= nl;                                   /* normal hacia afuera */
+        float fx = (a[0] + b[0] + c[0]) * (1.0f / 3), fy = (a[1] + b[1] + c[1]) * (1.0f / 3), fz = (a[2] + b[2] + c[2]) * (1.0f / 3);
+        float ex = camX - fx, ey = camY - fy, ez = camZ - fz;
+        if (nx * ex + ny * ey + nz * ez <= 0) continue;
+        float dist = sqrtf(ex * ex + ey * ey + ez * ez), shade = clampf(0.62f + 0.38f * (nx * -0.35f + ny * 0.8f + nz * 0.45f), 0.45f, 1.05f);
+        V v[3]; const float *pp[3] = { a, b, c };
+        for (int k = 0; k < 3; k++) { toView(pp[k][0], pp[k][1], pp[k][2], &v[k].x, &v[k].y, &v[k].z); fogColor(pal[VPL_C[t]], shade, dist, &v[k].r, &v[k].g, &v[k].b); }
+        emitPoly(v, 3, 0);
+    }
+}
 static const M34 *rigOverG = NULL;      /* si no es NULL, drawRig usa estas matrices de hueso (ragdoll) en vez de la animacion */
 static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, int weap, float wx, float wy, float wz, float yaw, float tr, float tg, float tb, float flash) {
     if (!sphereVis(wx, wy + 0.9f, wz, 1.8f)) return;     /* fuera de la vista: no se transforma */
@@ -2490,18 +2655,14 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
         emitPoly(v, 4, 0);
     }
     if (weap == 0 && !g->dead) {       /* pistola: corredera y empunadura, sujetas por el hueso del arma */
-        /* HK VP70Z: x0, x1, y0, y1, z0, z1, tipo (0 = metal, 1 = polimero). Las 3 primeras cajas bastan de lejos (nivel de detalle). */
-        static const float bxs[7][7] = {
-            { 0.147f, 0.193f, 1.113f, 1.173f, -0.62f, -0.30f, 0 },      /* corredera */
-            { 0.151f, 0.189f, 1.015f, 1.083f, -0.416f, -0.30f, 1 },     /* empunadura superior */
-            { 0.151f, 0.189f, 1.083f, 1.113f, -0.585f, -0.30f, 1 },     /* armazon */
-            { 0.152f, 0.188f, 0.96f, 1.015f, -0.395f, -0.30f, 1 },      /* empunadura inferior */
-            { 0.158f, 0.182f, 1.05f, 1.062f, -0.54f, -0.41f, 1 },       /* guardamonte: base */
-            { 0.158f, 0.182f, 1.05f, 1.083f, -0.54f, -0.517f, 1 },      /* guardamonte: frente */
-            { 0.147f, 0.193f, 0.945f, 0.96f, -0.40f, -0.285f, 0 } };    /* base del cargador */
         float lx0 = camX - wx, lz0 = camZ - wz;
-        int nbx = (lx0 * lx0 + lz0 * lz0 > 22.0f * 22.0f) ? 3 : 7;
-        for (int bi = 0; bi < nbx; bi++) {
+        if (lx0 * lx0 + lz0 * lz0 <= 18.0f * 18.0f) vpDrawRig(&G[BN_WEAP]);       /* cerca: malla VP70 (72 triangulos) */
+        else {                                                                      /* lejos: 3 cajas (x0, x1, y0, y1, z0, z1, tipo: 0 metal, 1 polimero) */
+        static const float bxs[3][7] = {
+            { 0.149f, 0.191f, 1.117f, 1.168f, -0.62f, -0.293f, 0 },     /* corredera */
+            { 0.152f, 0.188f, 1.080f, 1.117f, -0.585f, -0.293f, 1 },    /* marco */
+            { 0.152f, 0.188f, 0.950f, 1.080f, -0.39f, -0.30f, 1 } };    /* empunadura */
+        for (int bi = 0; bi < 3; bi++) {
             const float *bb = bxs[bi]; float c[8][3];
             for (int i = 0; i < 8; i++) { float lp[3] = { (i & 1) ? bb[1] : bb[0], (i & 2) ? bb[3] : bb[2], (i & 4) ? bb[5] : bb[4] }; m34Xf(&G[BN_WEAP], lp, c[i]); }
             float cxm = 0, cym = 0, czm = 0; for (int i = 0; i < 8; i++) { cxm += c[i][0] / 8; cym += c[i][1] / 8; czm += c[i][2] / 8; }
@@ -2519,6 +2680,7 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
                 for (int k = 0; k < 4; k++) { const float *pt = c[FACE[fcs][k]]; toView(pt[0], pt[1], pt[2], &v[k].x, &v[k].y, &v[k].z); fogColor(bb[6] > 0.5f ? RGBA(30, 31, 34, 255) : RGBA(48, 50, 55, 255), shade, dist, &v[k].r, &v[k].g, &v[k].b); }
                 emitPoly(v, 4, 0);
             }
+        }
         }
     }
     if (flash > 0 && !g->dead) {
@@ -2712,6 +2874,25 @@ static void lhandKey(const VMDef *d, float u, float *o) {
 #define C_BR RGBA(190, 150, 74, 255)
 #define C_WD RGBA(120, 82, 48, 255)
 #define C_WD2 RGBA(94, 62, 36, 255)
+/* pistola VP70 en primera persona: transforma los vertices una vez y dibuja cada triangulo de frente (colores planos) */
+static void vpDrawVM(int withMag) {
+    float pv[VPM_NV][3];
+    for (int i = 0; i < VPM_NV; i++) wpt(VPM_V[i * 3], VPM_V[i * 3 + 1], VPM_V[i * 3 + 2], pv[i]);
+    static const u32c pal[5] = { C_GM, C_GD, C_GL, RGBA(16, 16, 19, 255), RGBA(40, 42, 46, 255) };
+    int nt = withMag ? VPM_NT : VPM_NTB;
+    for (int t = 0; t < nt; t++) {
+        const float *a = pv[VPM_T[t * 3]], *b = pv[VPM_T[t * 3 + 1]], *c = pv[VPM_T[t * 3 + 2]];
+        float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+        float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, nl = sqrtf(nx * nx + ny * ny + nz * nz);
+        if (nl < 1e-12f) continue;
+        nx /= nl; ny /= nl; nz /= nl;
+        if (nx * a[0] + ny * a[1] + nz * a[2] >= 0) continue;                    /* de espaldas a la camara (esta en el origen) */
+        float shade = clampf(0.7f + 0.3f * (ny * 0.8f - nx * 0.35f), 0.45f, 1.0f);
+        u32c col = pal[VPM_C[t]]; V v[3]; const float *pp[3] = { a, b, c };
+        for (int k = 0; k < 3; k++) { v[k].x = pp[k][0]; v[k].y = pp[k][1]; v[k].z = pp[k][2]; v[k].r = CR(col) * shade; v[k].g = CG(col) * shade; v[k].b = CB(col) * shade; }
+        emitPoly(v, 3, 1);
+    }
+}
 static void handR(float gx, float gy, float gz, const float *anchor) {   /* mano derecha en la empunadura */
     u32c GLV = RGBA(52, 54, 58, 255), KNU = RGBA(92, 94, 100, 255), SL = RGBA(176, 152, 110, 255), SP = RGBA(142, 120, 84, 255);
     wbox(gx + 0.034f, gy + 0.0f, gz + 0.005f, 0.014f, 0.040f, 0.030f, GLV);
@@ -2761,26 +2942,7 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
     int magSeated = !reloading || u < 0.16f || u >= 0.76f, magOnHand = reloading && ((u >= 0.16f && u < 0.42f) || (u >= 0.5f && u < 0.76f));
     float pumpZ = 0.33f;
     if (w == 0) {          /* ---- pistola ---- */
-        /* HK VP70Z: corredera alta y cuadrada, armazon de polimero, guardamonte grande y empunadura ancha (22 cajas, unas 5 mas que la anterior; son cajas planas sin texturas) */
-        wbox(0, 0.033f, 0.0425f, 0.0225f, 0.023f, 0.1525f, GM);                 /* corredera */
-        wbox(0, 0.036f, 0.2075f, 0.0195f, 0.020f, 0.0125f, GM);                 /* nariz de la corredera (mas angosta) */
-        wbox(0, 0.030f, -0.0745f, 0.0238f, 0.020f, 0.0305f, GL);                /* bloque trasero elevado donde van las estrias (rasgo de la VP70Z) */
-        wbox(0, 0.012f, 0.215f, 0.0185f, 0.004f, 0.0075f, GD);                  /* bisel inferior de la boca */
-        wbox(0, 0.032f, 0.2205f, 0.007f, 0.007f, 0.0015f, RGBA(10, 10, 12, 255));   /* boca del canon */
-        for (int i = 0; i < 5; i++) wbox(0.0242f, 0.030f, -0.098f + i * 0.011f, 0.0012f, 0.017f, 0.0022f, GD);   /* estrias traseras (sobre el bloque elevado) */
-        wbox(0.0228f, 0.041f, 0.10f, 0.001f, 0.005f, 0.04f, RGBA(68, 70, 75, 255));         /* grabado "HECKLER & KOCH" */
-        wbox(0.0228f, 0.036f, 0.03f, 0.001f, 0.011f, 0.024f, RGBA(12, 12, 14, 255));        /* ventana de expulsion */
-        wbox(0, 0.0635f, -0.098f, 0.008f, 0.007f, 0.006f, GD);                  /* mira trasera */
-        wbox(0, 0.063f, 0.205f, 0.0035f, 0.007f, 0.005f, GD);                   /* mira delantera */
-        wbox(0, -0.0015f, 0.0375f, 0.0215f, 0.0135f, 0.1425f, GD);              /* armazon de polimero */
-        wbox(0, -0.030f, 0.1275f, 0.0125f, 0.018f, 0.0075f, GD);                /* guardamonte: frente */
-        wbox(0, -0.043f, 0.066f, 0.0125f, 0.005f, 0.069f, GD);                  /* guardamonte: base */
-        wbox(0, -0.026f, 0.095f, 0.004f, 0.016f, 0.003f, GL);                   /* gatillo */
-        wbox(0.0218f, -0.034f, 0.04f, 0.0012f, 0.007f, 0.007f, GL);             /* boton del seguro del cargador */
-        wbox(0, -0.045f, -0.055f, 0.0215f, 0.033f, 0.052f, GD);                 /* empunadura superior */
-        wbox(0, -0.099f, -0.060f, 0.0205f, 0.021f, 0.046f, GD);                 /* empunadura inferior (mas inclinada) */
-        wbox(0.0245f, -0.002f, 0.06f, 0.004f, 0.007f, 0.028f, RGBA(52, 54, 58, 255));   /* indice apoyado sobre el armazon */
-        if (magSeated) { wbox(0, -0.1265f, -0.062f, 0.0225f, 0.0065f, 0.05f, GM); wbox(0, -0.1305f, -0.118f, 0.0235f, 0.003f, 0.014f, GM); }   /* base del cargador con su pestana trasera */
+        vpDrawVM(magSeated);                                                    /* VP70: 218 triangulos, ver VPM_* */
     } else if (w == 1) {   /* ---- fusil ---- */
         wbox(0, -0.012f, 0.00f, 0.027f, 0.036f, 0.115f, GM);
         wbox(0, 0.030f, 0.02f, 0.029f, 0.027f, 0.14f, GD);
