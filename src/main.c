@@ -1825,6 +1825,12 @@ static float bfAds, bfStam = 1, bfBloom, bfShake, bfSprA, bfNadeT, bfSpot[MAXBOT
 static int bfSprint, bfStamLock, bfNades = 2, bfNadePend;
 static int bfNadeSt; static float bfNadeU, bfThrowT;      /* granada: 0 guardada, 1 sacando y quitando el seguro (mientras mantienes R2), 2 lanzando (al soltar R2) */
 #define SWAP_T 0.22f
+/* Placas de armadura (escudo) estilo Warzone: 3 placas de PLATE_HP cada una, L2 pone una, L3 corre */
+#define PLATE_N 3
+#define PLATE_HP 50.0f
+#define PLATE_T 1.6f        /* segundos que tarda en ponerse una placa */
+#define PLATE_STOCK 3       /* placas que llevas en la mochila al empezar cada ronda */
+static float bfArmor, bfPlateU; static int bfPlateSt, bfPlates = PLATE_STOCK, bfSprintTog;
 typedef struct { float x, y, z, vx, vy, vz, t; int on; } Nade;
 typedef struct { float x, y, z, t; } Boom;
 static Nade nades[4]; static Boom booms[4];
@@ -1875,6 +1881,7 @@ static void resetAmmo(void) {
     wsel = 0; wCD = wReload = wSwap = wKick = wFlash = 0; firedLatch = 0;
 #ifdef PS2_ONLINE
     bfAds = bfBloom = bfShake = bfSprA = bfNadeT = 0; bfStam = 1; bfSprint = bfStamLock = bfNadePend = 0; bfNadeSt = 0; bfNadeU = bfThrowT = 0; bfNades = netMode ? 0 : 2;
+    bfArmor = 0; bfPlateU = 0; bfPlateSt = 0; bfPlates = PLATE_STOCK; bfSprintTog = 0;
     memset(bfSpot, 0, sizeof bfSpot); memset(bfDT, 0, sizeof bfDT); memset(nades, 0, sizeof nades); memset(booms, 0, sizeof booms); memset(pts, 0, sizeof pts); memset(trcs, 0, sizeof trcs); memset(cass, 0, sizeof cass); memset(scr, 0, sizeof scr); bfFlashT = 0; goreReset();
 #endif
 }
@@ -1950,7 +1957,14 @@ static void damageBot(Bot *b, float dmg, int head) {
 }
 static void hurtPlayer(float d) {
     if (!P.alive || sandbox) return;      /* en el campo de pruebas eres invulnerable */
-    P.hp -= d; damageTaken += d;
+    damageTaken += d;
+#ifdef PS2_ONLINE
+    if (bfArmor > 0) {      /* el escudo absorbe el dano antes que la vida */
+        float ab = fminf(bfArmor, d); bfArmor -= ab; d -= ab; snd_play(SND_HEAD, 0.5f);
+        if (d <= 0.0f) { hurtT = 0.25f; return; }
+    }
+#endif
+    P.hp -= d;
     if (hurtT <= 0 && P.hp > 0) snd_play(SND_HURT, 0.8f);
     hurtT = 0.25f;
     if (P.hp <= 0) { P.hp = 0; P.alive = 0; pRig.deadKind = rand() % 3; snd_play(SND_PDEATH, 1.0f); deaths++; pushFeed("TE ELIMINARON"); if (mode == M_PLAYING && !netMode) endRound(0); }
@@ -3002,8 +3016,8 @@ static void updatePlayer(const Pad *pd, float dt, int canAct) {
     float ix = canAct ? pd->lx : 0, iz = canAct ? -pd->ly : 0;
     float il = sqrtf(ix * ix + iz * iz); if (il > 1) { ix /= il; iz /= il; }
 #ifdef PS2_ONLINE
-    /* Controles tipo shooter moderno: L3 = caminar en silencio, O = agacharse/levantarse, L2 = correr, L1 = apuntar */
-    int walk = (pd->down & B_L3) != 0;
+    /* Controles tipo shooter moderno: L3 = correr, R3 = caminar en silencio, O = agacharse/levantarse, L2 = poner placa, L1 = apuntar */
+    int walk = (pd->down & B_R3) != 0;
     if (canAct && P.alive && (pd->pressed & (B_CIRCLE | B_SELECT))) P.crWant = !P.crWant;
 #else
     int walk = (pd->down & B_CIRCLE) != 0;
@@ -3014,15 +3028,20 @@ static void updatePlayer(const Pad *pd, float dt, int canAct) {
     float sp = (walk ? 2.6f : 5.4f) * lerpf(1.0f, 0.5f, P.cr);
 #ifdef PS2_ONLINE
     {
-        int want = canAct && P.alive && (pd->down & B_L2) && !(pd->down & B_L1) && iz > 0.35f && !P.crWant && P.cr < 0.4f && P.ground && !walk;
+        /* L3 (clic): empieza a correr y sigue corriendo mientras empujes la palanca hacia delante; apuntar, disparar, agacharse o soltar la palanca lo corta */
+        if (canAct && P.alive && (pd->pressed & B_L3)) { bfPlateSt = 0; bfPlateU = 0; bfSprintTog = 1; }      /* tambien cancela la placa que estabas poniendo */
+        if (!canAct || !P.alive || iz <= 0.35f || (pd->down & (B_L1 | B_R1)) || P.crWant || walk) bfSprintTog = 0;
+        int want = bfSprintTog && !bfPlateSt && P.cr < 0.4f && P.ground;
         if (bfStam <= 0.0f) bfStamLock = 1; else if (bfStam > 0.3f) bfStamLock = 0;
         bfSprint = want && !bfStamLock;
+        if (!bfSprint) bfSprintTog = 0;
         bfStam = clampf(bfStam + (bfSprint ? -dt / 4.5f : dt / 6.0f), 0, 1);
-        int aimWant = canAct && P.alive && (pd->down & B_L1) && !bfSprint && wReload <= 0 && wSwap <= 0 && !bfNadePend;
+        int aimWant = canAct && P.alive && (pd->down & B_L1) && !bfSprint && wReload <= 0 && wSwap <= 0 && !bfNadePend && !bfPlateSt;
         bfAds = lerpf(bfAds, aimWant ? 1.0f : 0.0f, clampf(dt * 11, 0, 1));
         bfSprA = lerpf(bfSprA, bfSprint ? 1.0f : 0.0f, clampf(dt * 9, 0, 1));
         bfBloom = fmaxf(0, bfBloom - dt * 2.4f);
         if (bfSprint) sp = 7.6f; sp *= lerpf(1.0f, 0.55f, bfAds);
+        if (bfPlateSt) sp *= 0.6f;              /* mientras te pones la placa te mueves mas despacio */
         bfShake = fmaxf(0, bfShake - dt * 2.0f);
         if (bfNadeT > 0) bfNadeT -= dt;
     }
@@ -3069,12 +3088,27 @@ static void updateWeapon(const Pad *pd, float dt, int canAct) {
     wKick = fmaxf(0, wKick - dt * 9); wFlash = fmaxf(0, wFlash - dt);
 #ifdef PS2_ONLINE
     if ((!canAct || !P.alive) && bfNadeSt) { bfNadeSt = 0; bfNadePend = 0; bfNadeU = 0; }
+    if (!canAct || !P.alive) { bfPlateSt = 0; bfPlateU = 0; }
 #endif
     if (!canAct || !P.alive) return;
 #ifdef PS2_ONLINE
-    /* R1 dispara, R2 granada, L1 apunta, L2 corre, Cuadrado recarga, Triangulo/cruceta cambian de arma */
-    int trig = (pd->down & B_R1) != 0 && !bfSprint;
-    if (bfSprint || bfNadePend) wCD = fmaxf(wCD, 0.12f);
+    /* R1 dispara, R2 granada, L1 apunta, L2 pone placa, L3 corre, Cuadrado recarga, Triangulo/cruceta cambian de arma */
+    /* Placa de armadura: L2 pone una placa (si sigues apretando L2 pone la siguiente). Disparar, apuntar, recargar, granada o cambiar de arma la cancela. */
+    if (bfPlateSt && (pd->pressed & (B_R1 | B_L1 | B_SQUARE | B_R2 | B_TRIANGLE | B_LEFT | B_RIGHT))) { bfPlateSt = 0; bfPlateU = 0; }
+    if (!bfPlateSt) {
+        if ((pd->pressed & B_L2) && bfPlates > 0 && bfArmor < PLATE_HP * PLATE_N - 0.01f && !bfNadePend && !bfSprint && wReload <= 0 && wSwap <= 0) { bfPlateSt = 1; bfPlateU = 0; snd_play(SND_TICK, 0.7f); }
+    } else {
+        float u0 = bfPlateU; bfPlateU = fminf(1.0f, bfPlateU + dt / PLATE_T);
+        if (u0 < 0.62f && bfPlateU >= 0.62f) snd_play(SND_BOUNCE, 0.8f);                   /* la placa entra en el chaleco */
+        if (u0 < 0.80f && bfPlateU >= 0.80f) snd_play(SND_EMPTY, 0.45f);                   /* velcro */
+        if (bfPlateU >= 1.0f) {
+            bfArmor = fminf(PLATE_HP * PLATE_N, bfArmor + PLATE_HP); bfPlates--;
+            if ((pd->down & B_L2) && bfPlates > 0 && bfArmor < PLATE_HP * PLATE_N - 0.01f) { bfPlateU = 0; snd_play(SND_TICK, 0.7f); }   /* L2 mantenido: siguiente placa */
+            else { bfPlateSt = 0; bfPlateU = 0; }
+        }
+    }
+    int trig = (pd->down & B_R1) != 0 && !bfSprint && !bfPlateSt;
+    if (bfSprint || bfNadePend || bfPlateSt) wCD = fmaxf(wCD, 0.12f);
     if (!(pd->down & B_R1)) firedLatch = 0;
     if (trig && (W[wsel].autof || !firedLatch)) fireWeapon();
     if (!bfNadePend) {
@@ -3823,6 +3857,55 @@ static void drawNadeVM(void) {
         }
     }
 }
+/* ---- animacion de poner una placa de armadura en primera persona ---- */
+static void plateKey(const float (*K)[4], int n, float u, float *o) {     /* K[i] = { instante 0..1, x, y, z }; interpola suave entre claves */
+    if (u <= K[0][0]) { o[0] = K[0][1]; o[1] = K[0][2]; o[2] = K[0][3]; return; }
+    for (int i = 1; i < n; i++) if (u <= K[i][0]) {
+        float s = smooth((u - K[i - 1][0]) / (K[i][0] - K[i - 1][0]));
+        for (int j = 0; j < 3; j++) o[j] = K[i - 1][j + 1] + (K[i][j + 1] - K[i - 1][j + 1]) * s;
+        return;
+    }
+    o[0] = K[n - 1][1]; o[1] = K[n - 1][2]; o[2] = K[n - 1][3];
+}
+static void plateBody(void) {              /* la placa (ceramica oscura con borde) en el espacio actual; la mano derecha la sujeta por el borde derecho */
+    u32c FACE = RGBA(58, 64, 70, 255), EDGE = RGBA(118, 126, 134, 255), MARK = RGBA(86, 94, 100, 255);
+    float cx = -0.030f, cy = 0.040f;
+    wbox(cx, cy, 0.0f, 0.058f, 0.062f, 0.008f, FACE);
+    wbox(cx, cy + 0.068f, 0.0f, 0.044f, 0.010f, 0.008f, FACE);                                    /* hombros recortados */
+    wbox(cx - 0.058f, cy, 0.0f, 0.003f, 0.062f, 0.0095f, EDGE); wbox(cx + 0.058f, cy, 0.0f, 0.003f, 0.062f, 0.0095f, EDGE);
+    wbox(cx, cy - 0.062f, 0.0f, 0.058f, 0.003f, 0.0095f, EDGE); wbox(cx, cy + 0.078f, 0.0f, 0.044f, 0.003f, 0.0095f, EDGE);
+    wbox(cx, cy + 0.005f, -0.009f, 0.030f, 0.004f, 0.001f, MARK); wbox(cx, cy - 0.015f, -0.009f, 0.030f, 0.004f, 0.001f, MARK);   /* relieve de la cara */
+}
+static void plateHand(const float *p, float yaw, float pitch, float roll, int right, int withPlate) {
+    u32c GLV = RGBA(52, 54, 58, 255), KNU = RGBA(92, 94, 100, 255), SL = RGBA(176, 152, 110, 255), SP = RGBA(142, 120, 84, 255);
+    float a0[3], s = right ? 1.0f : -1.0f;
+    nadeSpace(p, yaw, pitch, roll); wpt(0.0f, -0.056f, -0.052f, a0);
+    { const float anc[3] = { 0.30f * s, -0.50f, 0.20f }; limb(anc, a0, 0.040f, right ? SL : SP, right ? SP : SL); }
+    if (right) {
+        if (withPlate) plateBody();
+        wbox(0, -0.048f, -0.010f, 0.034f, 0.012f, 0.034f, GLV);                                    /* palma */
+        wbox(0.041f, 0.000f, -0.010f, 0.010f, 0.040f, 0.032f, GLV); wbox(0.046f, 0.030f, -0.010f, 0.006f, 0.010f, 0.026f, KNU);   /* dedos y nudillos */
+        wbox(-0.030f, 0.004f, -0.036f, 0.012f, 0.022f, 0.010f, GLV);                               /* pulgar */
+    } else {
+        wbox(0, -0.020f, -0.012f, 0.034f, 0.028f, 0.010f, GLV);                                    /* palma abierta sobre la placa */
+        wbox(0, 0.020f, -0.012f, 0.030f, 0.014f, 0.010f, GLV);                                     /* dedos */
+        wbox(-0.034f, -0.010f, -0.012f, 0.010f, 0.018f, 0.010f, GLV); wbox(0, 0.036f, -0.012f, 0.026f, 0.005f, 0.008f, KNU);
+    }
+}
+static void drawPlateVM(void) {
+    static const float KR[][4] = {      /* mano derecha: baja al bolsillo, saca la placa, la muestra, la empuja al chaleco y se retira */
+        { 0.00f, 0.12f, -0.46f, 0.30f }, { 0.14f, 0.17f, -0.28f, 0.26f }, { 0.36f, 0.07f, -0.115f, 0.38f }, { 0.50f, 0.06f, -0.12f, 0.36f },
+        { 0.62f, 0.03f, -0.17f, 0.27f }, { 0.74f, 0.03f, -0.19f, 0.26f }, { 1.00f, 0.12f, -0.46f, 0.30f } };
+    static const float KL[][4] = {      /* mano izquierda: espera, sujeta la placa por el otro lado, la empuja y se retira */
+        { 0.00f, -0.26f, -0.46f, 0.28f }, { 0.26f, -0.26f, -0.40f, 0.28f }, { 0.40f, -0.020f, -0.100f, 0.36f }, { 0.50f, -0.020f, -0.110f, 0.35f },
+        { 0.62f, -0.010f, -0.160f, 0.27f }, { 0.74f, -0.010f, -0.180f, 0.26f }, { 1.00f, -0.26f, -0.46f, 0.28f } };
+    float u = bfPlateU, R[3], L[3];
+    plateKey(KR, 7, u, R); plateKey(KL, 7, u, L);
+    float push = smooth(clampf((u - 0.56f) / 0.06f, 0, 1)) * (1 - smooth(clampf((u - 0.70f) / 0.06f, 0, 1)));      /* golpecito al meterla */
+    R[2] -= 0.015f * push; L[2] -= 0.015f * push;
+    plateHand(R, 0.30f, -0.25f, -0.15f, 1, u >= 0.08f && u < 0.64f);
+    plateHand(L, 0.20f, -0.20f, 0.10f, 0, 0);
+}
 #endif
 static void drawWeaponModel(void) {
     float kick = wKick * 0.06f, swap = wSwap > 0 ? fminf(wSwap / SWAP_T, 1.4f) : 0;
@@ -3832,10 +3915,15 @@ static void drawWeaponModel(void) {
         float nl = bfNadeSt == 1 ? smooth(clampf(bfNadeU / 0.28f, 0, 1)) : 1 - smooth(clampf((bfThrowT - 0.20f) / 0.22f, 0, 1));
         if (nl > 0) swap = fmaxf(swap, 1.7f * nl);
     }
+    if (bfPlateSt) {         /* al ponerte la placa el arma baja y luego vuelve a subir */
+        float pl = smooth(clampf(bfPlateU / 0.14f, 0, 1)) * (1 - smooth(clampf((bfPlateU - 0.86f) / 0.14f, 0, 1)));
+        swap = fmaxf(swap, 1.7f * pl);
+    }
 #endif
     drawVM(wsel, kick, swap, wReload > 0 ? clampf(1 - wReload / W[wsel].reload, 0, 1) : 0, wReload > 0, spd);
 #ifdef PS2_ONLINE
     if (bfNadeSt) drawNadeVM();
+    if (bfPlateSt) drawPlateVM();
 #endif
 }
 static void drawCross(void) {
@@ -3892,6 +3980,19 @@ static void drawHud(void) {
     drawText(mx, SH - my - 12 * t, t * 1.6f, buf, RGBA(232, 236, 233, 255));
     float bw = SW * 0.2f; u32c hc = P.hp > 60 ? RGBA(111, 207, 151, 255) : (P.hp > 30 ? RGBA(224, 128, 58, 255) : RGBA(229, 72, 77, 255));
     gfx_rect(mx, SH - my + 2 * t, mx + bw, SH - my + 4 * t, RGBA(0, 0, 0, 160)); gfx_rect(mx, SH - my + 2 * t, mx + bw * P.hp / 100, SH - my + 4 * t, hc);
+#ifdef PS2_ONLINE
+    {   /* escudo: tres placas encima de la vida (azul = llena, naranja = casi rota; la que se esta poniendo se rellena en blanco) */
+        float pg = 2 * t, pw = (bw - pg * (PLATE_N - 1)) / PLATE_N, py1 = SH - my - 29 * t, py2 = SH - my - 24 * t;
+        int cur = (int)(bfArmor / PLATE_HP + 0.001f);
+        for (int i = 0; i < PLATE_N; i++) {
+            float x0 = mx + i * (pw + pg), x1 = x0 + pw, f = clampf((bfArmor - i * PLATE_HP) / PLATE_HP, 0, 1);
+            gfx_rect(x0, py1, x1, py2, RGBA(0, 0, 0, 160));
+            if (f > 0) gfx_rect(x0, py1, x0 + pw * f, py2, f < 0.35f ? RGBA(224, 128, 58, 255) : RGBA(150, 196, 232, 255));
+            if (bfPlateSt && i == cur) gfx_rect(x0, py1, x0 + pw * bfPlateU, py2, RGBA(232, 244, 255, 210));
+        }
+        snprintf(buf, 64, "x%d", bfPlates); drawText(mx + bw + 3 * t, py1 - t, t * 0.8f, buf, bfPlates > 0 ? RGBA(143, 160, 166, 255) : RGBA(229, 72, 77, 255));
+    }
+#endif
     /* municion */
     snprintf(buf, 64, "%d / %d", ammoMag[wsel], ammoRes[wsel]);
     drawText(SW - mx - textW(buf, t * 1.6f), SH - my - 12 * t, t * 1.6f, buf, wReload > 0 ? RGBA(224, 128, 58, 255) : RGBA(232, 236, 233, 255));
@@ -4147,7 +4248,7 @@ void game_frame(const Pad *pd, float dt) {
             if (canAct && (pd->pressed & B_DOWN)) { labClear(); snd_play(SND_TICK, 0.8f); }
             for (int i = 0; i < 4; i++) ammoRes[i] = W[i].reserve;
 #ifdef PS2_ONLINE
-            bfNades = 9;
+            bfNades = 9; bfPlates = 9;
 #endif
             P.hp = 100;
         }
@@ -4440,7 +4541,7 @@ void game_frame(const Pad *pd, float dt) {
         drawList(it, NULL, 3, SH * 0.45f);
 #endif
 #ifdef PS2_ONLINE
-        { const char *h[] = { "R1 DISPARAR  L1 APUNTAR  R2 MANTEN/SOLTAR GRANADA  L2 CORRER", "CUADRADO RECARGAR  X SALTAR  O AGACHARSE  L3 CAMINAR SILENCIO", "TRIANGULO O CRUCETA IZQ/DER: CAMBIAR ARMA" };
+        { const char *h[] = { "R1 DISPARAR  L1 APUNTAR  R2 MANTEN/SOLTAR GRANADA  L2 PONER PLACA", "CUADRADO RECARGAR  X SALTAR  O AGACHARSE  L3 CORRER  R3 CAMINAR SILENCIO", "TRIANGULO O CRUCETA IZQ/DER: CAMBIAR ARMA" };
           for (int i = 0; i < 3; i++) drawTextC(SW * 0.5f, SH * 0.80f + i * 8 * t, t * 0.65f, h[i], RGBA(143, 160, 166, 255)); }
 #endif
     } else if (mode == M_END) {
