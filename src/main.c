@@ -21,6 +21,7 @@ enum {
     SND_HIT, SND_HEAD, SND_DEATH0, SND_DEATH1, SND_HURT,
     SND_RELOAD, SND_EMPTY, SND_STEP, SND_TICK, SND_WIN, SND_LOSE, SND_PDEATH,
     SND_BOOM, SND_PIN, SND_BOUNCE,
+    SND_PLATING, SND_ARMORBREAK,
     SND_COUNT
 };
 
@@ -239,7 +240,8 @@ const char *const snd_names[SND_COUNT] = {
     "pistola.wav", "rifle.wav", "escopeta.wav", "disparo_bot.wav",
     "impacto.wav", "impacto_cabeza.wav", "muerte_bot1.wav", "muerte_bot2.wav", "herido.wav",
     "recarga.wav", "sin_balas.wav", "paso.wav", "tic_menu.wav", "ronda_ganada.wav", "ronda_perdida.wav", "muerte_jugador.wav",
-    "explosion.wav", "granada_seguro.wav", "granada_rebote.wav"
+    "explosion.wav", "granada_seguro.wav", "granada_rebote.wav",
+    "colocar_placa.wav", "escudo_roto.wav"
 };
 
 const short *snd_sample_data(int id, int *len) { if (id < 0 || id >= SND_COUNT || !samples[id].data) return 0; *len = samples[id].len; return samples[id].data; }
@@ -1828,7 +1830,7 @@ static int bfNadeSt; static float bfNadeU, bfThrowT;      /* granada: 0 guardada
 /* Placas de armadura (escudo) estilo Warzone: 3 placas de PLATE_HP cada una, L2 pone una, L3 corre */
 #define PLATE_N 3
 #define PLATE_HP 50.0f
-#define PLATE_T 1.6f        /* segundos que tarda en ponerse una placa */
+#define PLATE_T 1.7f        /* segundos que tarda en ponerse una placa */
 #define PLATE_STOCK 3       /* placas que llevas en la mochila al empezar cada ronda */
 #define PLATE_ROLL -0.45f   /* inclinacion de la placa en la mano (si se ve girada al reves, cambia el signo) */
 static float bfArmor, bfPlateU; static int bfPlateSt, bfPlates = PLATE_STOCK, bfSprintTog;
@@ -1961,7 +1963,9 @@ static void hurtPlayer(float d) {
     damageTaken += d;
 #ifdef PS2_ONLINE
     if (bfArmor > 0) {      /* el escudo absorbe el dano antes que la vida */
-        float ab = fminf(bfArmor, d); bfArmor -= ab; d -= ab; snd_play(SND_HEAD, 0.5f);
+        float had = bfArmor, ab = fminf(bfArmor, d); bfArmor -= ab; d -= ab;
+        if (had > 0 && bfArmor <= 0.001f) { bfArmor = 0; snd_play(SND_ARMORBREAK, 1.0f); }   /* te quitaron todo el escudo */
+        else snd_play(SND_HEAD, 0.5f);
         if (d <= 0.0f) { hurtT = 0.25f; return; }
     }
 #endif
@@ -3097,14 +3101,12 @@ static void updateWeapon(const Pad *pd, float dt, int canAct) {
     /* Placa de armadura: L2 pone una placa (si sigues apretando L2 pone la siguiente). Disparar, apuntar, recargar, granada o cambiar de arma la cancela. */
     if (bfPlateSt && (pd->pressed & (B_R1 | B_L1 | B_SQUARE | B_R2 | B_TRIANGLE | B_LEFT | B_RIGHT))) { bfPlateSt = 0; bfPlateU = 0; }
     if (!bfPlateSt) {
-        if ((pd->pressed & B_L2) && bfPlates > 0 && bfArmor < PLATE_HP * PLATE_N - 0.01f && !bfNadePend && !bfSprint && wReload <= 0 && wSwap <= 0) { bfPlateSt = 1; bfPlateU = 0; snd_play(SND_TICK, 0.7f); }
+        if ((pd->pressed & B_L2) && bfPlates > 0 && bfArmor < PLATE_HP * PLATE_N - 0.01f && !bfNadePend && !bfSprint && wReload <= 0 && wSwap <= 0) { bfPlateSt = 1; bfPlateU = 0; snd_play(SND_PLATING, 0.9f); }
     } else {
-        float u0 = bfPlateU; bfPlateU = fminf(1.0f, bfPlateU + dt / PLATE_T);
-        if (u0 < 0.56f && bfPlateU >= 0.56f) snd_play(SND_BOUNCE, 0.8f);                   /* la placa entra en el chaleco */
-        if (u0 < 0.66f && bfPlateU >= 0.66f) snd_play(SND_EMPTY, 0.45f);                   /* velcro */
+        bfPlateU = fminf(1.0f, bfPlateU + dt / PLATE_T);
         if (bfPlateU >= 1.0f) {
             bfArmor = fminf(PLATE_HP * PLATE_N, bfArmor + PLATE_HP); bfPlates--;
-            if ((pd->down & B_L2) && bfPlates > 0 && bfArmor < PLATE_HP * PLATE_N - 0.01f) { bfPlateU = 0; snd_play(SND_TICK, 0.7f); }   /* L2 mantenido: siguiente placa */
+            if ((pd->down & B_L2) && bfPlates > 0 && bfArmor < PLATE_HP * PLATE_N - 0.01f) { bfPlateU = 0; snd_play(SND_PLATING, 0.9f); }   /* L2 mantenido: siguiente placa */
             else { bfPlateSt = 0; bfPlateU = 0; }
         }
     }
@@ -3871,11 +3873,11 @@ static void plateKey(const float (*K)[7], int n, float u, float *o) {     /* K[i
     }
     for (int j = 0; j < 6; j++) o[j] = K[n - 1][j + 1];
 }
-#define PLATE_IN 0.04f      /* la placa aparece en la mano */
-#define PLATE_OUT 0.60f     /* la placa ya esta dentro del chaleco: desaparece */
+#define PLATE_IN 0.46f      /* la placa aparece en la mano */
+#define PLATE_OUT 0.95f     /* la placa ya esta dentro del chaleco: desaparece */
 static float bfPlateDip(void) {            /* cuanto baja la camara (radianes) durante la animacion */
     if (!bfPlateSt) return 0;
-    return 0.08f * smooth(bfPlateU / 0.20f) * (1 - smooth((bfPlateU - 0.60f) / 0.30f));
+    return 0.08f * smooth((bfPlateU - 0.45f) / 0.15f) * (1 - smooth((bfPlateU - 0.92f) / 0.08f));
 }
 static void plateBody(void) {              /* placa grande (ceramica azul oscuro con fibras verticales y etiqueta plateada); la mano derecha la agarra por el borde derecho */
     u32c FACE = RGBA(30, 36, 46, 255), EDGE = RGBA(70, 78, 88, 255), RIB = RGBA(46, 54, 66, 255), TAG = RGBA(196, 200, 204, 255), TAG2 = RGBA(110, 114, 120, 255);
@@ -3899,18 +3901,37 @@ static void plateHand(const float *p, int withPlate) {
     wbox(0.041f, -0.020f, -0.040f, 0.007f, 0.012f, 0.006f, SKIN);                                  /* yema del pulgar/dedo (piel, se ve en el video) */
     wbox(-0.030f, 0.004f, -0.036f, 0.012f, 0.022f, 0.010f, GLV);                                   /* pulgar */
 }
+static void plateHandL(const float *p) {   /* mano izquierda: sujeta abierta la solapa del chaleco; casi siempre solo asoma la punta por la esquina inferior izquierda */
+    u32c GLV = RGBA(34, 36, 40, 255), SK = RGBA(30, 32, 36, 255), SK2 = RGBA(24, 26, 30, 255), SKIN = RGBA(176, 128, 96, 255), FLAP = RGBA(40, 46, 56, 255);
+    float a0[3];
+    nadeSpace(p, p[3], p[4], p[5]); wpt(0.0f, -0.030f, -0.045f, a0);
+    { const float anc[3] = { -0.90f, -1.20f, 0.12f }; limb(anc, a0, 0.040f, SK, SK2); }
+    wbox(0.0f, 0.0f, -0.020f, 0.022f, 0.030f, 0.012f, GLV); wbox(0.022f, 0.010f, -0.004f, 0.010f, 0.007f, 0.018f, GLV); wbox(0.022f, -0.010f, -0.004f, 0.010f, 0.007f, 0.018f, GLV);
+    wbox(0.034f, 0.010f, -0.004f, 0.005f, 0.006f, 0.015f, SKIN);                                   /* yema del dedo (piel) */
+    wbox(0.060f, 0.000f, -0.010f, 0.045f, 0.050f, 0.003f, FLAP);                                   /* solapa del chaleco */
+}
 static void drawPlateVM(void) {
+    /* Linea de tiempo (u = (t_video - 0.40) / 1.65): 0-0.27 la derecha entra abajo a abrir el chaleco y se hunde a por la placa; la izquierda asoma
+     * y aguanta la solapa; 0.46-0.60 sube la placa; 0.60-0.85 la muestra; 0.85-0.97 la empuja hacia abajo con la palma dentro del chaleco. */
     static const float KR[][7] = {      /* mano derecha: { instante 0..1, x, y, z, giro, cabeceo, alabeo } */
-        { 0.00f, 0.55f, -0.75f, 0.30f, 0.30f, -0.60f,  0.55f }, { 0.08f, 0.42f, -0.50f, 0.28f, 0.30f, -0.60f,  0.55f },
-        { 0.13f, 0.27f, -0.18f, 0.27f, 0.25f, -0.60f,  0.50f }, { 0.20f, 0.15f, -0.12f, 0.26f, 0.25f, -0.65f,  0.15f },
-        { 0.27f, 0.14f, -0.16f, 0.26f, 0.25f, -0.65f, -0.20f }, { 0.33f, 0.15f, -0.18f, 0.26f, 0.25f, -0.65f, -0.20f },
-        { 0.40f, 0.10f, -0.21f, 0.26f, 0.20f, -0.62f, -0.18f }, { 0.47f, 0.08f, -0.29f, 0.27f, 0.20f, -0.60f, -0.15f },
-        { 0.55f, 0.24f, -0.45f, 0.29f, 0.25f, -0.55f, -0.10f }, { 0.65f, 0.45f, -0.68f, 0.32f, 0.30f, -0.50f,  0.20f },
-        { 1.00f, 0.55f, -0.75f, 0.30f, 0.30f, -0.60f,  0.55f } };
-    float u = bfPlateU, R[6];
-    if (u >= 0.70f) return;                                     /* la mano ya salio de la pantalla */
-    plateKey(KR, 11, u, R);
-    plateHand(R, u >= PLATE_IN && u < PLATE_OUT);
+        { 0.00f, 0.60f, -0.70f, 0.30f, 0.30f, -0.50f,  0.40f }, { 0.06f, 0.42f, -0.30f, 0.30f, 0.30f, -0.50f,  0.40f },
+        { 0.12f, 0.30f, -0.18f, 0.30f, 0.30f, -0.50f,  0.30f }, { 0.20f, 0.30f, -0.40f, 0.30f, 0.30f, -0.50f,  0.30f },
+        { 0.27f, 0.45f, -0.65f, 0.31f, 0.30f, -0.55f,  0.50f }, { 0.42f, 0.55f, -0.75f, 0.30f, 0.30f, -0.60f,  0.55f },
+        { 0.50f, 0.42f, -0.50f, 0.28f, 0.30f, -0.60f,  0.55f }, { 0.55f, 0.27f, -0.18f, 0.27f, 0.25f, -0.60f,  0.50f },
+        { 0.61f, 0.15f, -0.12f, 0.26f, 0.25f, -0.65f,  0.15f }, { 0.67f, 0.14f, -0.16f, 0.26f, 0.25f, -0.65f, -0.20f },
+        { 0.72f, 0.15f, -0.18f, 0.26f, 0.25f, -0.65f, -0.20f }, { 0.79f, 0.10f, -0.21f, 0.26f, 0.20f, -0.62f, -0.18f },
+        { 0.85f, 0.08f, -0.29f, 0.27f, 0.20f, -0.60f, -0.15f }, { 0.90f, 0.10f, -0.40f, 0.27f, 0.20f, -0.85f, -0.10f },
+        { 0.94f, 0.12f, -0.52f, 0.27f, 0.20f, -1.00f, -0.05f }, { 0.98f, 0.25f, -0.75f, 0.30f, 0.30f, -0.80f,  0.20f },
+        { 1.00f, 0.60f, -0.80f, 0.30f, 0.30f, -0.50f,  0.40f } };
+    static const float KL[][7] = {      /* mano izquierda: casi quieta en la esquina inferior izquierda; tira de la solapa y la sujeta al meter la placa */
+        { 0.00f, -0.45f, -0.60f, 0.28f, 0.20f, -0.20f, 0.10f }, { 0.10f, -0.34f, -0.14f, 0.28f, 0.20f, -0.20f, 0.10f },
+        { 0.25f, -0.27f, -0.10f, 0.28f, 0.20f, -0.20f, 0.10f }, { 0.33f, -0.30f, -0.14f, 0.28f, 0.20f, -0.20f, 0.15f },
+        { 0.45f, -0.27f, -0.10f, 0.28f, 0.20f, -0.20f, 0.10f }, { 0.84f, -0.27f, -0.11f, 0.28f, 0.20f, -0.20f, 0.10f },
+        { 0.91f, -0.20f, -0.17f, 0.27f, 0.20f, -0.25f, 0.10f }, { 0.96f, -0.22f, -0.14f, 0.28f, 0.20f, -0.20f, 0.10f },
+        { 1.00f, -0.45f, -0.60f, 0.28f, 0.20f, -0.20f, 0.10f } };
+    float u = bfPlateU, R[6], L[6];
+    plateKey(KR, 17, u, R); plateHand(R, u >= PLATE_IN && u < PLATE_OUT);
+    if (u >= 0.06f && u < 0.98f) { plateKey(KL, 9, u, L); plateHandL(L); }
 }
 #endif
 static void drawWeaponModel(void) {
