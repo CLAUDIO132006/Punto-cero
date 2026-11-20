@@ -1797,10 +1797,10 @@ static const Weapon W[4] = {
 };
 
 /* ---------- Estado de juego ---------- */
-enum { M_MENU, M_SETTINGS, M_PLAYING, M_ROUNDEND, M_PAUSE, M_END, M_OPTIONS, M_MP_MENU, M_MP_LOBBY, M_KEYS };
+enum { M_MENU, M_SETTINGS, M_PLAYING, M_ROUNDEND, M_PAUSE, M_END, M_OPTIONS, M_MP_MENU, M_MP_LOBBY, M_KEYS, M_CODE, M_LAB };
 typedef struct { float x, y, z, vx, vy, vz, yaw, pitch, hp; int alive, ground; float noise, bob, cr; int crWant; } Player;
 static Rig pRig; static int pFired;      /* animacion del jugador (tercera persona) */
-typedef struct { float x, z, yaw, hp; int alive, state, burst; float react, fireCD, pause, strafe, strafeT, wx, wz, lkx, lkz, lost, timer, dead, step, walk, mv; int remote, wep, shots; float tx, ty, tz, tyaw, py, pitch; Rig rg; float cr, aimW, hitT, coverX, coverZ, coverT, peekT, px, pz, rlT; int crWant, cov, fireEv, rl; short path[48]; int pn, pi; float pgx, pgz, repT, stuck; } Bot;
+typedef struct { float x, z, yaw, hp; int alive, state, burst; float react, fireCD, pause, strafe, strafeT, wx, wz, lkx, lkz, lost, timer, dead, step, walk, mv; int remote, wep, shots; float tx, ty, tz, tyaw, py, pitch; Rig rg; float cr, aimW, hitT, coverX, coverZ, coverT, peekT, px, pz, rlT; int crWant, cov, fireEv, rl; short path[48]; int pn, pi; float pgx, pgz, repT, stuck; int dummy, unused; } Bot;   /* dummy: soldado quieto del modo secreto; unused: ranura libre */
 
 static Player P;
 static Bot bots[MAXBOT];
@@ -1815,6 +1815,7 @@ static int mpShots;
 #endif
 static int nbots = 0;
 static int mode = M_MENU, prevMode = M_PLAYING, sel = 0, settingsFrom = M_MENU;
+static int sandbox, codeD[4], codePos; static float codeBad;      /* modo secreto (codigo 1122): campo de pruebas */
 static int wsel, ammoMag[4], ammoRes[4];
 static float wCD, wReload, wSwap, wKick, wFlash, freeze, afterT, orbit, hitFlash, hmT, hurtT, bannerT;
 static int scoreMe, scoreBots, roundNo, kills, heads, deaths, firedLatch;
@@ -1822,6 +1823,7 @@ static int scoreMe, scoreBots, roundNo, kills, heads, deaths, firedLatch;
 /* ---- Estilo de juego "tactico moderno" (solo version PS2): apuntado, sprint, granadas, radar ---- */
 static float bfAds, bfStam = 1, bfBloom, bfShake, bfSprA, bfNadeT, bfSpot[MAXBOT], bfDX[4], bfDZ[4], bfDT[4];
 static int bfSprint, bfStamLock, bfNades = 2, bfNadePend;
+static int bfNadeSt; static float bfNadeU, bfThrowT;      /* granada: 0 guardada, 1 sacando y quitando el seguro (mientras mantienes R2), 2 lanzando (al soltar R2) */
 #define SWAP_T 0.22f
 typedef struct { float x, y, z, vx, vy, vz, t; int on; } Nade;
 typedef struct { float x, y, z, t; } Boom;
@@ -1872,7 +1874,7 @@ static void resetAmmo(void) {
     for (int i = 0; i < 4; i++) { ammoMag[i] = W[i].mag; ammoRes[i] = W[i].reserve; }
     wsel = 0; wCD = wReload = wSwap = wKick = wFlash = 0; firedLatch = 0;
 #ifdef PS2_ONLINE
-    bfAds = bfBloom = bfShake = bfSprA = bfNadeT = 0; bfStam = 1; bfSprint = bfStamLock = bfNadePend = 0; bfNades = netMode ? 0 : 2;
+    bfAds = bfBloom = bfShake = bfSprA = bfNadeT = 0; bfStam = 1; bfSprint = bfStamLock = bfNadePend = 0; bfNadeSt = 0; bfNadeU = bfThrowT = 0; bfNades = netMode ? 0 : 2;
     memset(bfSpot, 0, sizeof bfSpot); memset(bfDT, 0, sizeof bfDT); memset(nades, 0, sizeof nades); memset(booms, 0, sizeof booms); memset(pts, 0, sizeof pts); memset(trcs, 0, sizeof trcs); memset(cass, 0, sizeof cass); memset(scr, 0, sizeof scr); bfFlashT = 0; goreReset();
 #endif
 }
@@ -1886,6 +1888,7 @@ static void spawnPlayer(void) {
     P.x = sp->x; P.z = sp->z; P.yaw = openYaw(sp->x, sp->z);
 }
 static void startRound(void) {
+    sandbox = 0;
     spawnBots();
     memset(&P, 0, sizeof(P)); memset(&pRig, 0, sizeof(pRig)); spawnPlayer(); P.hp = 100; P.alive = 1; P.ground = 1;
     resetAmmo(); freeze = 2.4f; afterT = 0; mode = M_PLAYING; hurtT = 0;
@@ -1942,11 +1945,11 @@ static void damageBot(Bot *b, float dmg, int head) {
         b->alive = 0; b->dead = 0; kills++;
         snd_play3d(SND_DEATH0 + (rand() & 1), b->x, b->z, 1.3f); if (head) heads++;
         pushFeed(head ? "BAJA - CABEZA" : "BAJA");
-        if (aliveBots() == 0 && mode == M_PLAYING) endRound(1);
+        if (aliveBots() == 0 && mode == M_PLAYING && !sandbox) endRound(1);
     }
 }
 static void hurtPlayer(float d) {
-    if (!P.alive) return;
+    if (!P.alive || sandbox) return;      /* en el campo de pruebas eres invulnerable */
     P.hp -= d; damageTaken += d;
     if (hurtT <= 0 && P.hp > 0) snd_play(SND_HURT, 0.8f);
     hurtT = 0.25f;
@@ -2136,6 +2139,10 @@ static const struct { signed char a, b, t; float f, k; } RCN[] = {
     { RP_GRIP, RP_MUZ, 0, 1, 1 }, { RP_HAND, RP_HIP, 1, 0.5f, 1 } };
 #define RD_NC ((int)(sizeof RCN / sizeof RCN[0]))
 static float rcnRest[RD_NC]; static int rcnReady;
+/* colision entre partes del cuerpo: pares de particulas (pies, manos, cabeza, pecho...) que no deben atravesarse.
+ * La distancia minima es la suma de radios, pero nunca mas del 85% de la distancia de reposo (asi no pelean con las articulaciones). */
+#define RD_NPAIR (RD_NP * (RD_NP - 1) / 2)
+static unsigned char rpA[RD_NPAIR], rpB[RD_NPAIR]; static float rpMin[RD_NPAIR]; static int rpN;
 typedef struct {
     float p[RD_NP][3], q[RD_NP][3];      /* posicion actual y anterior (Verlet) */
     M34 G[BN_N];                          /* matrices de hueso listas para dibujar */
@@ -2342,7 +2349,15 @@ static void rdCollide(Ragdoll *rd, int i, const Box **nb, int nn) {
 }
 static void rdStep(Ragdoll *rd) {
     const Box *nb[28]; int nn = 0;
-    if (!rcnReady) { for (int c = 0; c < RD_NC; c++) { float d[3]; rvSub(RPD[(int)RCN[c].a].p, RPD[(int)RCN[c].b].p, d); rcnRest[c] = sqrtf(rvDot(d, d)); } rcnReady = 1; }
+    if (!rcnReady) {
+        for (int c = 0; c < RD_NC; c++) { float d[3]; rvSub(RPD[(int)RCN[c].a].p, RPD[(int)RCN[c].b].p, d); rcnRest[c] = sqrtf(rvDot(d, d)); }
+        for (int a = 0; a < RD_NP; a++) for (int b = a + 1; b < RD_NP; b++) {
+            float d[3]; rvSub(RPD[a].p, RPD[b].p, d); float rest = sqrtf(rvDot(d, d)), m = RPD[a].r + RPD[b].r;
+            if (rest * 0.85f < m) m = rest * 0.85f;
+            if (m > 0.03f) { rpA[rpN] = (unsigned char)a; rpB[rpN] = (unsigned char)b; rpMin[rpN] = m; rpN++; }
+        }
+        rcnReady = 1;
+    }
     rd->t += RD_H; if (rd->splatCD > 0) rd->splatCD -= RD_H;
     if (rd->held && rd->t > rd->relT) rd->held = 0;
     for (int i = 0; i < RD_NP; i++) for (int k = 0; k < 3; k++) { float v = (rd->p[i][k] - rd->q[i][k]) * 0.997f; rd->q[i][k] = rd->p[i][k]; rd->p[i][k] += v; }
@@ -2366,18 +2381,55 @@ static void rdStep(Ragdoll *rd) {
         }
         { float *h = rd->p[RP_HAND], d[3]; rvSub(h, sh, d); float len = sqrtf(rvDot(d, d)); if (len > 1e-6f) for (int m = 0; m < 3; m++) h[m] = sh[m] + d[m] * (L / len); }
         if (rd->held) for (int m = 0; m < 3; m++) rd->p[RP_GRIP][m] = rd->p[RP_HAND][m];
+        { float ramp = clampf(rd->t / 0.12f, 0, 1) * 0.5f;      /* las partes del cuerpo no se atraviesan entre si (entra suave al morir para evitar tirones) */
+          for (int c = 0; c < rpN; c++) {
+              int a = rpA[c], b = rpB[c]; if (rd->held && (a == RP_GRIP || b == RP_GRIP)) continue;
+              float *pa = rd->p[a], *pb = rd->p[b], d[3]; rvSub(pa, pb, d); float l2 = rvDot(d, d), m = rpMin[c];
+              if (l2 >= m * m) continue;
+              float l = sqrtf(l2), k;
+              if (l < 1e-5f) { d[0] = 0; d[1] = 1; d[2] = 0; l = 0; } else { d[0] /= l; d[1] /= l; d[2] /= l; }
+              k = (m - l) * ramp;
+              for (int e = 0; e < 3; e++) { pa[e] += d[e] * k; pb[e] -= d[e] * k; }
+          } }
         for (int i = 0; i < RD_NP; i++) { if (rd->held && i == RP_GRIP) continue; rdCollide(rd, i, nb, nn); }
     }
     float mv = 0; for (int i = 0; i < RD_NP; i++) { float d[3]; rvSub(rd->p[i], rd->q[i], d); float l = rvDot(d, d); if (l > mv) mv = l; }
     if (mv < 0.003f * 0.003f) rd->sleepT += RD_H; else rd->sleepT = 0;      /* ~0,18 m/s */
     if (rd->sleepT > 0.4f || rd->t > 7.0f) rd->asleep = 1;
 }
+/* cadaver contra cadaver: las partes de un cuerpo no atraviesan las de otro (el que esta dormido hace de obstaculo fijo) */
+static void rdBodies(void) {
+    for (int i = 0; i < nbots; i++) {
+        Ragdoll *A = &rds[i]; if (!A->on) continue;
+        for (int j = i + 1; j < nbots; j++) {
+            Ragdoll *B = &rds[j]; if (!B->on || (A->asleep && B->asleep)) continue;
+            float hd[3]; rvSub(A->p[RP_HIP], B->p[RP_HIP], hd); if (rvDot(hd, hd) > 2.6f * 2.6f) continue;
+            float sa = A->asleep ? 0.0f : 1.0f, sb = B->asleep ? 0.0f : 1.0f, wa = sa / (sa + sb), wb = sb / (sa + sb);
+            for (int a = 0; a < RP_HAND; a++) for (int b = 0; b < RP_HAND; b++) {
+                float *pa = A->p[a], *pb = B->p[b], d[3]; rvSub(pa, pb, d);
+                float m = RPD[a].r + RPD[b].r, l2 = rvDot(d, d); if (l2 >= m * m) continue;
+                float l = sqrtf(l2); if (l < 1e-5f) { d[0] = 0; d[1] = 1; d[2] = 0; l = 0; } else { d[0] /= l; d[1] /= l; d[2] /= l; }
+                float pen = (m - l) * 0.6f;
+                for (int e = 0; e < 3; e++) {
+                    pa[e] += d[e] * pen * wa; A->q[a][e] += d[e] * pen * wa * 0.7f;
+                    pb[e] -= d[e] * pen * wb; B->q[b][e] -= d[e] * pen * wb * 0.7f;
+                }
+            }
+        }
+    }
+}
 static void rdUpdate(float dt) {
+    unsigned char stepped[MAXBOT]; memset(stepped, 0, sizeof stepped);
+    for (int i = 0; i < nbots; i++) {
+        Ragdoll *rd = &rds[i]; if (!rd->on || rd->asleep) continue;
+        rd->acc += dt; if (rd->acc > 0.1f) rd->acc = 0.1f;
+        while (rd->acc >= RD_H) { rd->acc -= RD_H; rdStep(rd); if (rd->asleep) break; }
+        stepped[i] = 1;
+    }
+    rdBodies();
     for (int i = 0; i < nbots; i++) {
         Ragdoll *rd = &rds[i]; if (!rd->on) continue;
-        if (!rd->asleep) {
-            rd->acc += dt; if (rd->acc > 0.1f) rd->acc = 0.1f;
-            while (rd->acc >= RD_H) { rd->acc -= RD_H; rdStep(rd); if (rd->asleep) break; }
+        if (stepped[i]) {
             rdBuild(rd->p, rd->G, sstep(0.0f, 0.4f, rd->t), rd->rz, NULL);
             if (!rd->asleep && rd->t < 3.0f) { rd->px = rd->p[RP_HIP][0]; rd->pz = rd->p[RP_HIP][2]; }
         }
@@ -2550,6 +2602,50 @@ static void bfDrawNades(void) {
     bfDrawFx();
 }
 #endif
+
+/* ---------- MODO SECRETO (codigo 1122): campo de pruebas ----------
+ * Soldados que se quedan quietos para dispararles, ver su skin o ver como mueren (balas, granadas). Eres invulnerable y la municion es infinita. */
+static void labClear(void) {
+    for (int i = 0; i < MAXBOT; i++) { memset(&bots[i], 0, sizeof bots[i]); bots[i].unused = 1; }
+#ifdef PS2_ONLINE
+    memset(rds, 0, sizeof rds); memset(bdrops, 0, sizeof bdrops); memset(bdecs, 0, sizeof bdecs); bdecI = bdropI = 0;
+#endif
+}
+static void labSpawn(void) {
+    int idx = -1; float old = -1;
+    for (int i = 0; i < MAXBOT; i++) if (bots[i].unused) { idx = i; break; }
+    if (idx < 0) for (int i = 0; i < MAXBOT; i++) if (!bots[i].alive && bots[i].dead > old) { old = bots[i].dead; idx = i; }      /* recicla el cadaver mas viejo */
+    if (idx < 0) { setBanner("LIMITE DE SOLDADOS", "ABAJO: BORRAR TODOS", 1.5f); return; }
+    float fx = -sinf(P.yaw), fz = -cosf(P.yaw), rx = cosf(P.yaw), rz = -sinf(P.yaw), px = 0, pz = 0; int ok = 0;
+    static const float LAT[5] = { 0, 1.1f, -1.1f, 2.2f, -2.2f };
+    for (int di = 0; di < 4 && !ok; di++) for (int li = 0; li < 5 && !ok; li++) {
+        float d = 5.0f - di, lt = LAT[li]; px = P.x + fx * d + rx * lt; pz = P.z + fz * d + rz * lt;
+        if (fabsf(px) > HALF - 1 || fabsf(pz) > HALF - 1 || blockedAt(px, pz, 0, 0.45f) || !walkClear(P.x, P.z, px, pz)) continue;
+        int free = 1; for (int k = 0; k < MAXBOT; k++) if (k != idx && bots[k].alive && (bots[k].x - px) * (bots[k].x - px) + (bots[k].z - pz) * (bots[k].z - pz) < 0.8f * 0.8f) free = 0;
+        ok = free;
+    }
+    if (!ok) { setBanner("SIN ESPACIO AQUI", "MUEVETE A OTRO LUGAR", 1.5f); return; }
+    Bot *b = &bots[idx]; memset(b, 0, sizeof *b);
+    b->x = px; b->z = pz; b->yaw = atan2f(-(P.x - px), -(P.z - pz)); b->hp = DIFF_HP[S.diff]; b->alive = 1; b->dummy = 1; b->state = BS_PATROL;
+#ifdef PS2_ONLINE
+    memset(&rds[idx], 0, sizeof rds[idx]); bfSpot[idx] = 0;
+#endif
+    snd_play(SND_TICK, 0.8f);
+}
+static void labStart(void) {
+    if (curMap != S.map) { curMap = S.map; buildWorld(); }
+    sandbox = 1; nbots = MAXBOT; roundNo = 1; scoreMe = scoreBots = 0; kills = heads = deaths = 0; damageTaken = 0;
+    memset(feed, 0, sizeof(feed)); memset(feedT, 0, sizeof(feedT));
+    memset(&P, 0, sizeof(P)); memset(&pRig, 0, sizeof(pRig)); spawnPlayer(); P.hp = 100; P.alive = 1; P.ground = 1;
+    resetAmmo(); labClear(); freeze = 0.3f; afterT = 0; mode = M_PLAYING; hurtT = 0;
+    setBanner("CAMPO DE PRUEBAS", "ARRIBA: SOLDADO   ABAJO: BORRAR", 3.0f);
+    labSpawn();
+}
+static void labSet(int i, int dir) {
+    if (i == 1) { S.map = (S.map + dir + NMAPS) % NMAPS; curMap = S.map; buildWorld(); }
+    else if (i == 2) S.skin = (S.skin + dir + 4) % 4;
+    snd_play(SND_TICK, 0.6f);
+}
 
 static void botShoot(Bot *b, float dist) {
     snd_play3d(SND_BOTSHOT, b->x, b->z, 1.0f);
@@ -2833,6 +2929,7 @@ static void updateBots(float dt, int active) {
         Bot *b = &bots[i];
         if (!b->alive) { b->dead += dt; continue; }
         if (b->remote) continue;                                  /* el jugador remoto lo mueve la red */
+        if (b->dummy) { b->state = BS_PATROL; b->crWant = 0; if (b->hitT > 0) b->hitT -= dt; continue; }   /* modo secreto: se quedan quietos */
         if (b->hitT > 0) b->hitT -= dt;
         if (b->coverT > 0) b->coverT -= dt;
         float dx = P.x - b->x, dz = P.z - b->z, dist = sqrtf(dx * dx + dz * dz);
@@ -2970,20 +3067,36 @@ static void updateWeapon(const Pad *pd, float dt, int canAct) {
     }
     if (wReload > 0) { wReload -= dt; if (wReload <= 0) { wReload = 0; int n = W[wsel].mag - ammoMag[wsel]; if (n > ammoRes[wsel]) n = ammoRes[wsel]; ammoMag[wsel] += n; ammoRes[wsel] -= n; } }
     wKick = fmaxf(0, wKick - dt * 9); wFlash = fmaxf(0, wFlash - dt);
+#ifdef PS2_ONLINE
+    if ((!canAct || !P.alive) && bfNadeSt) { bfNadeSt = 0; bfNadePend = 0; bfNadeU = 0; }
+#endif
     if (!canAct || !P.alive) return;
 #ifdef PS2_ONLINE
     /* R1 dispara, R2 granada, L1 apunta, L2 corre, Cuadrado recarga, Triangulo/cruceta cambian de arma */
     int trig = (pd->down & B_R1) != 0 && !bfSprint;
-    if (bfSprint) wCD = fmaxf(wCD, 0.12f);
+    if (bfSprint || bfNadePend) wCD = fmaxf(wCD, 0.12f);
     if (!(pd->down & B_R1)) firedLatch = 0;
     if (trig && (W[wsel].autof || !firedLatch)) fireWeapon();
-    if (pd->pressed & B_SQUARE) startReload();
-    if (pd->pressed & (B_TRIANGLE | B_RIGHT)) switchTo(wsel + 1);
-    if (pd->pressed & B_LEFT) switchTo(wsel - 1);
-    if ((pd->pressed & B_R2) && bfNades > 0 && !bfNadePend && wSwap <= 0 && wReload <= 0 && !netMode) {   /* sacar el seguro, bajar el arma y lanzar */
-        snd_play(SND_PIN, 0.8f); bfNadePend = 1; bfNadeT = 0.38f; wSwap = 0.45f;
+    if (!bfNadePend) {
+        if (pd->pressed & B_SQUARE) startReload();
+        if (pd->pressed & (B_TRIANGLE | B_RIGHT)) switchTo(wsel + 1);
+        if (pd->pressed & B_LEFT) switchTo(wsel - 1);
     }
-    if (bfNadePend && bfNadeT <= 0) { bfThrow(); bfNadePend = 0; }
+    /* Granada: R2 la saca y le quita el seguro; mientras sigas apretando R2 la mantienes lista; al soltar R2 la lanzas.
+     * Si sueltas antes de quitar el seguro, la guarda. */
+    if (bfNadeSt == 0) {
+        if ((pd->pressed & B_R2) && bfNades > 0 && wSwap <= 0 && wReload <= 0 && !netMode && !bfSprint) { bfNadeSt = 1; bfNadeU = 0; bfNadePend = 1; }
+    } else if (bfNadeSt == 1) {
+        float u0 = bfNadeU;
+        if (pd->down & B_R2) bfNadeU = fminf(1.0f, bfNadeU + dt / 0.95f);
+        else if (bfNadeU >= 0.62f) { bfNadeSt = 2; bfThrowT = 0; }                       /* ya sin seguro: lanzar */
+        else { bfNadeU -= dt / 0.45f; if (bfNadeU <= 0) { bfNadeU = 0; bfNadeSt = 0; bfNadePend = 0; } }   /* aun con seguro: guardarla */
+        if (u0 < 0.62f && bfNadeU >= 0.62f) snd_play(SND_PIN, 0.9f);                      /* clic del seguro al sacarlo */
+    } else {
+        float t0 = bfThrowT; bfThrowT += dt;
+        if (t0 < 0.14f && bfThrowT >= 0.14f) bfThrow();                                    /* la granada sale a mitad del brazo */
+        if (bfThrowT >= 0.42f) { bfNadeSt = 0; bfNadePend = 0; bfNadeU = 0; wCD = fmaxf(wCD, 0.12f); }
+    }
 #else
     int trig = (pd->down & (B_R2 | B_R1)) != 0;
     if (!trig) firedLatch = 0;
@@ -3349,6 +3462,7 @@ static void updateRigs(float dt) {
 static void drawBots(void) {
     for (int i = 0; i < nbots; i++) {
         const Bot *b = &bots[i];
+        if (b->unused) continue;
 #ifdef PS2_ONLINE
         if (rds[i].on) {      /* cadaver con ragdoll: ligeramente enrojecido segun la herida */
             const Ragdoll *rd = &rds[i]; float tn = 1.0f - 0.28f * rd->wound;
@@ -3657,10 +3771,72 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
         wbox(0, (w == 0 ? 0.03f : 0.02f), m + 0.04f, 0.012f, 0.07f, 0.01f, RGBA(255, 170, 60, 255)); wbox(0, (w == 0 ? 0.03f : 0.02f), m + 0.04f, 0.07f, 0.012f, 0.01f, RGBA(255, 170, 60, 255));
     }
 }
+#ifdef PS2_ONLINE
+/* ---- animacion de la granada en primera persona ---- */
+static void lerp3(const float *a, const float *b, float t, float *o) { for (int i = 0; i < 3; i++) o[i] = a[i] + (b[i] - a[i]) * t; }
+static void nadeSpace(const float *p, float yaw, float pitch, float roll) { rotMat(yaw, pitch, roll, WR); for (int j = 0; j < 3; j++) WT[j] = p[j]; }
+static void nadeBody(int pinOn) {          /* cuerpo, cuello, palanca (lado +x) y pasador con anilla (lado -x) en el espacio actual */
+    u32c G1 = RGBA(62, 76, 48, 255), G2 = RGBA(44, 55, 35, 255), M1 = RGBA(158, 162, 158, 255), M2 = RGBA(112, 116, 112, 255);
+    wbox(0, 0, 0, 0.030f, 0.036f, 0.030f, G1);
+    wbox(0, 0.018f, 0, 0.0315f, 0.0035f, 0.0315f, G2); wbox(0, 0, 0, 0.0315f, 0.0035f, 0.0315f, G2); wbox(0, -0.018f, 0, 0.0315f, 0.0035f, 0.0315f, G2);
+    wbox(0, 0.046f, 0, 0.015f, 0.010f, 0.015f, M2); wbox(0, 0.058f, 0, 0.011f, 0.003f, 0.011f, M1);
+    wbox(0.034f, 0.006f, 0, 0.004f, 0.050f, 0.013f, M1); wbox(0.020f, 0.058f, 0, 0.018f, 0.004f, 0.013f, M1);      /* palanca */
+    if (pinOn) {
+        wbox(-0.012f, 0.050f, 0, 0.018f, 0.0025f, 0.0025f, M1);
+        wbox(-0.040f, 0.060f, 0, 0.010f, 0.0025f, 0.0025f, M1); wbox(-0.040f, 0.040f, 0, 0.010f, 0.0025f, 0.0025f, M1);
+        wbox(-0.050f, 0.050f, 0, 0.0025f, 0.010f, 0.0025f, M1); wbox(-0.030f, 0.050f, 0, 0.0025f, 0.010f, 0.0025f, M1);
+    }
+}
+static void drawNadeVM(void) {
+    u32c GLV = RGBA(52, 54, 58, 255), KNU = RGBA(92, 94, 100, 255), SL = RGBA(176, 152, 110, 255), SP = RGBA(142, 120, 84, 255), M1 = RGBA(158, 162, 158, 255);
+    float u = bfNadeSt == 2 ? 1.0f : bfNadeU, th = bfThrowT, R[3], Lh[3], yaw = 0.30f, pitch = -0.20f, roll = -0.15f;
+    const float R0[3] = { 0.12f, -0.46f, 0.30f }, R1[3] = { 0.075f, -0.115f, 0.38f };
+    lerp3(R0, R1, smooth(clampf(u / 0.28f, 0, 1)), R);
+    int inHand = 1;
+    if (bfNadeSt == 2) {                                  /* lanzamiento: el brazo se echa atras, avanza y vuelve */
+        const float W1[3] = { 0.15f, -0.10f, 0.18f }, F1[3] = { 0.03f, -0.02f, 0.66f }, D1[3] = { 0.14f, -0.46f, 0.30f };
+        float w = smooth(clampf(th / 0.10f, 0, 1)), s2 = smooth(clampf((th - 0.10f) / 0.10f, 0, 1)), r = smooth(clampf((th - 0.22f) / 0.20f, 0, 1));
+        lerp3(R1, W1, w, R); if (th > 0.10f) lerp3(W1, F1, s2, R); if (th > 0.22f) lerp3(F1, D1, r, R);
+        pitch = -0.20f - 0.55f * s2; inHand = th < 0.14f;
+    }
+    /* mano derecha: antebrazo, palma debajo, dedos sobre la palanca y pulgar */
+    { float a0[3]; nadeSpace(R, yaw, pitch, roll); wpt(0.0f, -0.058f, -0.055f, a0);
+      const float anc[3] = { 0.30f, -0.50f, 0.20f }; limb(anc, a0, 0.040f, SL, SP);
+      if (inHand) nadeBody(u < 0.5f && bfNadeSt == 1);
+      wbox(0, -0.048f, -0.010f, 0.034f, 0.012f, 0.034f, GLV);
+      wbox(0.041f, 0.000f, -0.010f, 0.010f, 0.040f, 0.032f, GLV); wbox(0.046f, 0.030f, -0.010f, 0.006f, 0.010f, 0.026f, KNU);
+      wbox(-0.030f, 0.004f, -0.036f, 0.012f, 0.022f, 0.010f, GLV); }
+    /* mano izquierda: llega al seguro, tira y se retira con el pasador */
+    if (bfNadeSt == 1) {
+        float PP[3] = { R[0] - 0.045f, R[1] + 0.052f, R[2] - 0.010f }, L0[3] = { -0.26f, -0.46f, 0.28f }, P1[3] = { PP[0] - 0.12f, PP[1] - 0.010f, PP[2] - 0.030f }, P2[3] = { -0.32f, -0.50f, 0.25f };
+        if (u < 0.28f) { Lh[0] = L0[0]; Lh[1] = L0[1]; Lh[2] = L0[2]; }
+        else if (u < 0.50f) lerp3(L0, PP, smooth(clampf((u - 0.28f) / 0.22f, 0, 1)), Lh);
+        else if (u < 0.64f) lerp3(PP, P1, smooth(clampf((u - 0.50f) / 0.14f, 0, 1)), Lh);
+        else lerp3(P1, P2, smooth(clampf((u - 0.70f) / 0.30f, 0, 1)), Lh);
+        float a0[3]; nadeSpace(Lh, 0.20f, -0.10f, 0.10f); wpt(0.0f, -0.030f, -0.045f, a0);
+        const float anc[3] = { -0.30f, -0.50f, 0.20f }; limb(anc, a0, 0.040f, SP, SL);
+        wbox(0.0f, 0.0f, -0.020f, 0.022f, 0.030f, 0.012f, GLV); wbox(0.022f, 0.010f, -0.004f, 0.010f, 0.007f, 0.018f, GLV); wbox(0.022f, -0.010f, -0.004f, 0.010f, 0.007f, 0.018f, GLV);
+        if (u >= 0.5f && u < 0.97f) {                    /* pasador con anilla en la mano */
+            wbox(0.034f, 0.0f, 0, 0.0025f, 0.0025f, 0.020f, M1);
+            wbox(0.046f, 0.010f, 0, 0.010f, 0.0025f, 0.0025f, M1); wbox(0.046f, -0.010f, 0, 0.010f, 0.0025f, 0.0025f, M1);
+            wbox(0.056f, 0.0f, 0, 0.0025f, 0.010f, 0.0025f, M1); wbox(0.036f, 0.0f, 0.0f, 0.0025f, 0.010f, 0.0025f, M1);
+        }
+    }
+}
+#endif
 static void drawWeaponModel(void) {
     float kick = wKick * 0.06f, swap = wSwap > 0 ? fminf(wSwap / SWAP_T, 1.4f) : 0;
     float spd = clampf(sqrtf(P.vx * P.vx + P.vz * P.vz) / 5.4f, 0, 1) * (P.ground ? 1.0f : 0.0f);
+#ifdef PS2_ONLINE
+    if (bfNadeSt) {          /* al sacar la granada el arma baja; al lanzar vuelve a subir */
+        float nl = bfNadeSt == 1 ? smooth(clampf(bfNadeU / 0.28f, 0, 1)) : 1 - smooth(clampf((bfThrowT - 0.20f) / 0.22f, 0, 1));
+        if (nl > 0) swap = fmaxf(swap, 1.7f * nl);
+    }
+#endif
     drawVM(wsel, kick, swap, wReload > 0 ? clampf(1 - wReload / W[wsel].reload, 0, 1) : 0, wReload > 0, spd);
+#ifdef PS2_ONLINE
+    if (bfNadeSt) drawNadeVM();
+#endif
 }
 static void drawCross(void) {
     float cx = SW * 0.5f, cy = SH * 0.5f, t = SH / 448.0f, len = 7 * t, gap = 5 * t, th = 1.2f * t;
@@ -3724,9 +3900,15 @@ static void drawHud(void) {
     if (!netMode) { snprintf(buf, 64, "GRANADAS %d", bfNades); drawText(SW - mx - textW(buf, t * 0.8f), SH - my - 28 * t, t * 0.8f, buf, bfNades > 0 ? RGBA(143, 160, 166, 255) : RGBA(229, 72, 77, 255)); }
 #endif
     /* marcador */
+    if (sandbox) {
+        drawTextC(SW * 0.5f, my * 0.7f, t * 1.0f, "CAMPO DE PRUEBAS", RGBA(224, 128, 58, 255));
+        snprintf(buf, 64, "SOLDADOS %d   BAJAS %d", aliveBots(), kills); drawTextC(SW * 0.5f, my * 0.7f + 10 * t, t * 0.8f, buf, RGBA(143, 160, 166, 255));
+        drawTextC(SW * 0.5f, my * 0.7f + 19 * t, t * 0.65f, "ARRIBA: SOLDADO   ABAJO: BORRAR", RGBA(143, 160, 166, 255));
+    } else {
     snprintf(buf, 64, "RONDA %d", roundNo); drawTextC(SW * 0.5f, my * 0.7f, t * 1.0f, buf, RGBA(232, 236, 233, 255));
     snprintf(buf, 64, "TU %d - %d BOTS", scoreMe, scoreBots); drawTextC(SW * 0.5f, my * 0.7f + 10 * t, t * 0.9f, buf, RGBA(91, 180, 214, 255));
     snprintf(buf, 64, "VIVOS %d / %d", aliveBots(), nbots); drawTextC(SW * 0.5f, my * 0.7f + 19 * t, t * 0.7f, buf, RGBA(143, 160, 166, 255));
+    }
     /* radar */
     float rs = SH * 0.17f, rx0 = mx, ry0 = my, rc = rs * 0.5f, R = 24.0f;
     gfx_rect(rx0, ry0, rx0 + rs, ry0 + rs, RGBA(8, 11, 13, 150));
@@ -3938,9 +4120,9 @@ void game_frame(const Pad *pd, float dt) {
     { int f; if (pc_video_poll(&f)) { vidCur.full = vidNew.full = f; cfgSave(); } }
     mpPump(dt);
     if (!editing) { char tmp[16]; pc_text_input(tmp, 16); }
-    snd_music(mode == M_MENU || mode == M_END || mode == M_MP_MENU || mode == M_MP_LOBBY || (mode == M_SETTINGS && settingsFrom == M_MENU) || (mode == M_OPTIONS && optsFrom == M_MENU));
+    snd_music(mode == M_MENU || mode == M_CODE || mode == M_LAB || mode == M_END || mode == M_MP_MENU || mode == M_MP_LOBBY || (mode == M_SETTINGS && settingsFrom == M_MENU) || (mode == M_OPTIONS && optsFrom == M_MENU));
 #else
-    snd_music(mode == M_MENU || mode == M_END || (mode == M_SETTINGS && settingsFrom == M_MENU));
+    snd_music(mode == M_MENU || mode == M_CODE || mode == M_LAB || mode == M_END || (mode == M_SETTINGS && settingsFrom == M_MENU));
 #endif
     /* --- logica --- */
     if (hurtT > 0) hurtT -= dt;
@@ -3960,6 +4142,15 @@ void game_frame(const Pad *pd, float dt) {
         updatePlayer(gp, dt, canAct);
         snd_listener(P.x, P.z, P.yaw);
         updateWeapon(gp, dt, canAct);
+        if (sandbox) {
+            if (canAct && (pd->pressed & B_UP)) labSpawn();
+            if (canAct && (pd->pressed & B_DOWN)) { labClear(); snd_play(SND_TICK, 0.8f); }
+            for (int i = 0; i < 4; i++) ammoRes[i] = W[i].reserve;
+#ifdef PS2_ONLINE
+            bfNades = 9;
+#endif
+            P.hp = 100;
+        }
         updateBots(dt, canAct);
 #ifdef PS2_ONLINE
         bfUpdateNades(dt); bfUpdateFx(dt); goreUpdate(dt);
@@ -4001,6 +4192,20 @@ void game_frame(const Pad *pd, float dt) {
         } else
 #endif
         if (mode == M_PLAYING && (pd->pressed & B_START)) { mode = M_PAUSE; sel = 0; prevMode = M_PLAYING; }
+    } else if (mode == M_PAUSE && sandbox) {
+        menuNav(pd, 5);
+        if ((pd->pressed & B_START) || (pd->pressed & B_CIRCLE)) mode = prevMode;
+        else {
+            int d = ((pd->pressed & B_RIGHT) ? 1 : 0) - ((pd->pressed & B_LEFT) ? 1 : 0);
+            if (sel == 3 && d) { S.skin = (S.skin + d + 4) % 4; snd_play(SND_TICK, 0.6f); }
+            else if (pd->pressed & B_CROSS) {
+                if (sel == 0) mode = prevMode;
+                else if (sel == 1) { labSpawn(); mode = prevMode; }
+                else if (sel == 2) { labClear(); mode = prevMode; }
+                else if (sel == 3) { S.skin = (S.skin + 1) % 4; snd_play(SND_TICK, 0.6f); }
+                else { mode = M_MENU; sel = 0; nbots = 0; sandbox = 0; }
+            }
+        }
     } else if (mode == M_PAUSE) {
 #ifdef PC_ONLINE
         menuNav(pd, PAUSE_N);
@@ -4022,6 +4227,7 @@ void game_frame(const Pad *pd, float dt) {
         }
 #endif
     } else if (mode == M_MENU) {
+        if (pd->pressed & B_SELECT) { mode = M_CODE; codePos = 0; memset(codeD, 0, sizeof codeD); codeBad = 0; sel = 0; snd_play(SND_TICK, 0.8f); }      /* SELECT: pide el codigo secreto */
 #ifdef PC_ONLINE
         orbit += dt * 0.08f; menuNav(pd, MAIN_N);
         if (pd->pressed & B_CROSS) {
@@ -4037,6 +4243,25 @@ void game_frame(const Pad *pd, float dt) {
         orbit += dt * 0.08f; menuNav(pd, 2);
         if (pd->pressed & B_CROSS) { if (sel == 0) startMatch(); else { settingsFrom = M_MENU; mode = M_SETTINGS; sel = 0; } }
 #endif
+    } else if (mode == M_CODE) {
+        orbit += dt * 0.08f; if (codeBad > 0) codeBad -= dt;
+        if (pd->pressed & B_LEFT) codePos = (codePos + 3) % 4;
+        if (pd->pressed & B_RIGHT) codePos = (codePos + 1) % 4;
+        if (pd->pressed & B_UP) codeD[codePos] = (codeD[codePos] + 1) % 10;
+        if (pd->pressed & B_DOWN) codeD[codePos] = (codeD[codePos] + 9) % 10;
+        if (pd->pressed & (B_UP | B_DOWN | B_LEFT | B_RIGHT)) snd_play(SND_TICK, 0.6f);
+        if (pd->pressed & B_CROSS) {
+            int v = ((codeD[0] * 10 + codeD[1]) * 10 + codeD[2]) * 10 + codeD[3];
+            if (v == 1122) { mode = M_LAB; sel = 0; snd_play(SND_WIN, 0.7f); }
+            else { codeBad = 1.0f; snd_play(SND_EMPTY, 0.8f); }
+        }
+        if (pd->pressed & B_CIRCLE) { mode = M_MENU; sel = 0; }
+    } else if (mode == M_LAB) {
+        orbit += dt * 0.08f; menuNav(pd, 4);
+        if (pd->pressed & B_LEFT) labSet(sel, -1);
+        if (pd->pressed & B_RIGHT) labSet(sel, 1);
+        if (pd->pressed & B_CROSS) { if (sel == 0) labStart(); else if (sel == 3) { mode = M_MENU; sel = 0; } else labSet(sel, 1); }
+        if (pd->pressed & B_CIRCLE) { mode = M_MENU; sel = 0; }
     } else if (mode == M_SETTINGS) {
         orbit += dt * 0.08f; menuNav(pd, 12);
         if (pd->pressed & B_LEFT) changeSetting(sel, -1);
@@ -4175,12 +4400,35 @@ void game_frame(const Pad *pd, float dt) {
         drawList(it, NULL, 2, SH * 0.52f);
 #endif
         drawTextC(SW * 0.5f, SH * 0.9f - 6 * t, t * 0.7f, "ARRIBA/ABAJO MOVER   X ACEPTAR", RGBA(143, 160, 166, 255));
+    } else if (mode == M_CODE) {
+        drawMenuBg(); drawTitle();
+        drawTextC(SW * 0.5f, SH * 0.40f, t * 1.6f, "CODIGO SECRETO", RGBA(232, 236, 233, 255));
+        { float bw = 20 * t, gap = 8 * t, x0 = SW * 0.5f - (4 * bw + 3 * gap) * 0.5f, y0 = SH * 0.50f;
+          for (int i = 0; i < 4; i++) {
+              float x = x0 + i * (bw + gap); int on = i == codePos; char dg[2] = { (char)('0' + codeD[i]), 0 };
+              u32c bg = codeBad > 0 ? RGBA(229, 72, 77, 255) : (on ? RGBA(224, 128, 58, 255) : RGBA(19, 26, 31, 230));
+              gfx_rect(x, y0, x + bw, y0 + 26 * t, bg);
+              drawText(x + bw * 0.5f - 3 * t * 2.2f + 1.1f * t, y0 + 4 * t, t * 2.2f, dg, on ? RGBA(23, 16, 10, 255) : RGBA(232, 236, 233, 255));
+          } }
+        if (codeBad > 0) drawTextC(SW * 0.5f, SH * 0.50f + 32 * t, t * 0.9f, "CODIGO INCORRECTO", RGBA(229, 72, 77, 255));
+        drawTextC(SW * 0.5f, SH * 0.9f - 6 * t, t * 0.7f, "IZQ/DER DIGITO   ARRIBA/ABAJO CAMBIAR   X ACEPTAR   O VOLVER", RGBA(143, 160, 166, 255));
+    } else if (mode == M_LAB) {
+        drawMenuBg(); drawTextC(SW * 0.5f, SH * 0.08f, t * 3.0f, "MODO SECRETO", RGBA(224, 128, 58, 255));
+        const char *it[] = { "CAMPO DE PRUEBAS", "MAPA", "ENEMIGOS (SKIN)", "VOLVER" }, *vals[4] = { NULL, MAPS[S.map].name, SKIN_NAMES[S.skin], NULL };
+        drawList(it, vals, 4, SH * 0.30f);
+        drawTextC(SW * 0.5f, SH * 0.62f, t * 0.7f, "SOLDADOS QUIETOS: DISPARALES, MIRA SU SKIN, USA GRANADAS", RGBA(143, 160, 166, 255));
+        drawTextC(SW * 0.5f, SH * 0.62f + 9 * t, t * 0.7f, "EN JUEGO: ARRIBA = NUEVO SOLDADO   ABAJO = BORRAR TODOS", RGBA(143, 160, 166, 255));
+        drawTextC(SW * 0.5f, SH * 0.92f - 6 * t, t * 0.7f, "IZQ/DER CAMBIAR   X ACEPTAR   O VOLVER", RGBA(143, 160, 166, 255));
     } else if (mode == M_SETTINGS) {
         drawMenuBg(); drawTextC(SW * 0.5f, SH * 0.08f, t * 3.0f, "CONFIGURACION", RGBA(232, 236, 233, 255));
         const char *it[] = { "DIFICULTAD", "BOTS POR RONDA", "RONDAS PARA GANAR", "SENSIBILIDAD", "CAMPO DE VISION", "INVERTIR EJE Y", "COLOR DE MIRA", "VOLUMEN", "ENEMIGOS", "CAMARA", "MAPA", "VOLVER" };
         const char *vals[12]; settingsLabels(vals);
         drawList(it, vals, 12, SH * 0.15f);
         drawTextC(SW * 0.5f, SH * 0.92f - 6 * t, t * 0.7f, "IZQ/DER CAMBIAR   O VOLVER", RGBA(143, 160, 166, 255));
+    } else if (mode == M_PAUSE && sandbox) {
+        drawMenuBg(); drawTextC(SW * 0.5f, SH * 0.16f, t * 4.0f, "PAUSA", RGBA(232, 236, 233, 255)); drawTextC(SW * 0.5f, SH * 0.16f + 34 * t, t * 0.9f, "CAMPO DE PRUEBAS", RGBA(224, 128, 58, 255));
+        const char *it[] = { "CONTINUAR", "SOLDADO NUEVO", "BORRAR SOLDADOS", "ENEMIGOS (SKIN)", "MENU PRINCIPAL" }, *vals[5] = { NULL, NULL, NULL, SKIN_NAMES[S.skin], NULL };
+        drawList(it, vals, 5, SH * 0.40f);
     } else if (mode == M_PAUSE) {
         drawMenuBg(); drawTextC(SW * 0.5f, SH * 0.2f, t * 4.0f, "PAUSA", RGBA(232, 236, 233, 255));
 #ifdef PC_ONLINE
@@ -4192,7 +4440,7 @@ void game_frame(const Pad *pd, float dt) {
         drawList(it, NULL, 3, SH * 0.45f);
 #endif
 #ifdef PS2_ONLINE
-        { const char *h[] = { "R1 DISPARAR  L1 APUNTAR  R2 GRANADA  L2 CORRER", "CUADRADO RECARGAR  X SALTAR  O AGACHARSE  L3 CAMINAR SILENCIO", "TRIANGULO O CRUCETA IZQ/DER: CAMBIAR ARMA" };
+        { const char *h[] = { "R1 DISPARAR  L1 APUNTAR  R2 MANTEN/SOLTAR GRANADA  L2 CORRER", "CUADRADO RECARGAR  X SALTAR  O AGACHARSE  L3 CAMINAR SILENCIO", "TRIANGULO O CRUCETA IZQ/DER: CAMBIAR ARMA" };
           for (int i = 0; i < 3; i++) drawTextC(SW * 0.5f, SH * 0.80f + i * 8 * t, t * 0.65f, h[i], RGBA(143, 160, 166, 255)); }
 #endif
     } else if (mode == M_END) {
