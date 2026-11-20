@@ -984,6 +984,15 @@ static void toView(float wx, float wy, float wz, float *x, float *y, float *z) {
 }
 
 #define NEAR 0.12f
+/* Descarte por objeto: devuelve 0 si la esfera esta entera detras de la camara o fuera del campo de vision (no se transforma ni se dibuja). */
+static int sphereVis(float wx, float wy, float wz, float r) {
+    float x, y, z; toView(wx, wy, wz, &x, &y, &z);
+    if (z + r < NEAR) return 0;
+    float lx = (SW * 0.5f) / camF, ly = (SH * 0.5f) / camF;
+    if (x - lx * z > r * sqrtf(1 + lx * lx) || -x - lx * z > r * sqrtf(1 + lx * lx)) return 0;
+    if (y - ly * z > r * sqrtf(1 + ly * ly) || -y - ly * z > r * sqrtf(1 + ly * ly)) return 0;
+    return 1;
+}
 static void emitPoly(V *in, int n, int overlay) {
     V out[12]; int m = 0;
     for (int i = 0; i < n; i++) {
@@ -1006,6 +1015,13 @@ static void emitPoly(V *in, int n, int overlay) {
         a[i].y = SH * 0.5f - out[i].y * iz * camF;
         a[i].z = overlay ? 16200000.0f + 50000.0f * iz : 16777000.0f * 0.1f * iz;   /* el arma y las manos siempre delante, ordenados por profundidad */
         a[i].r = out[i].r; a[i].g = out[i].g; a[i].b = out[i].b;
+    }
+    {   /* descarte: poligono entero fuera de la pantalla, o de area casi nula (de canto) */
+        float mnx = a[0].x, mxx = mnx, mny = a[0].y, mxy = mny, ar = 0;
+        for (int i = 1; i < m; i++) { if (a[i].x < mnx) mnx = a[i].x; if (a[i].x > mxx) mxx = a[i].x; if (a[i].y < mny) mny = a[i].y; if (a[i].y > mxy) mxy = a[i].y; }
+        if (mxx < 0 || mnx > SW || mxy < 0 || mny > SH) return;
+        for (int i = 0; i < m; i++) { int j = (i + 1) % m; ar += a[i].x * a[j].y - a[j].x * a[i].y; }
+        if (fabsf(ar) < 0.02f) return;
     }
     /* Recorte 2D contra la pantalla con margen: la GS solo admite coordenadas acotadas. */
     const float M = 128.0f, lim[4] = { -M, SW + M, -M, SH + M };
@@ -1046,6 +1062,7 @@ static const float FN[6][3] = { {-1,0,0}, {1,0,0}, {0,-1,0}, {0,1,0}, {0,0,-1}, 
 
 /* Caja orientada en el mundo (giro en Y). */
 static void obox(float cx, float cy, float cz, float hw, float hh, float hd, float yaw, u32c col) {
+    if (!sphereVis(cx, cy, cz, sqrtf(hw * hw + hh * hh + hd * hd))) return;
     float c[8][3], ys = sinf(yaw), yc = cosf(yaw);
     for (int i = 0; i < 8; i++) {
         float lx = (i & 1) ? hw : -hw, ly = (i & 2) ? hh : -hh, lz = (i & 4) ? hd : -hd;
@@ -1097,6 +1114,7 @@ static void vbox(float cx, float cy, float cz, float hw, float hh, float hd, u32
 static void drawFloor(void) {
     for (int i = 0; i < 12; i++) for (int j = 0; j < 12; j++) {
         float x0 = -HALF + i * 5, z0 = -HALF + j * 5;
+        if (!sphereVis(x0 + 2.5f, 0, z0 + 2.5f, 3.6f)) continue;
         float mx = x0 + 2.5f - camX, mz = z0 + 2.5f - camZ;
         float dist = sqrtf(mx * mx + mz * mz);
         u32c base = ((i + j) & 1) ? MAPS[curMap].floorB : MAPS[curMap].floorA;
@@ -1197,6 +1215,12 @@ static char feed[4][40]; static float feedT[4];
 
 enum { BS_PATROL, BS_SEARCH, BS_ALERT, BS_ENGAGE, BS_COVER, BS_HIDE, BS_PEEK };
 
+#ifdef PS2_ONLINE
+static void goreHit(Bot *b, float dmg, int head);
+static void rdSpawn(int idx, float dmg, int head);
+static void goreReset(void);
+static float rdRay(const float *o, const float *d, float t);
+#endif
 static int aliveBots(void) { int n = 0; for (int i = 0; i < nbots; i++) n += bots[i].alive; return n; }
 static void setBanner(const char *a, const char *b, float t) { strncpy(bannerA, a, 47); strncpy(bannerB, b, 47); bannerA[47] = bannerB[47] = 0; bannerT = t; }
 static void pushFeed(const char *s) {
@@ -1219,7 +1243,7 @@ static void resetAmmo(void) {
     wsel = 0; wCD = wReload = wSwap = wKick = wFlash = 0; firedLatch = 0;
 #ifdef PS2_ONLINE
     bfAds = bfBloom = bfShake = bfSprA = bfNadeT = 0; bfStam = 1; bfSprint = bfStamLock = bfNadePend = 0; bfNades = netMode ? 0 : 2;
-    memset(bfSpot, 0, sizeof bfSpot); memset(bfDT, 0, sizeof bfDT); memset(nades, 0, sizeof nades); memset(booms, 0, sizeof booms); memset(pts, 0, sizeof pts); memset(trcs, 0, sizeof trcs); memset(cass, 0, sizeof cass); memset(scr, 0, sizeof scr); bfFlashT = 0;
+    memset(bfSpot, 0, sizeof bfSpot); memset(bfDT, 0, sizeof bfDT); memset(nades, 0, sizeof nades); memset(booms, 0, sizeof booms); memset(pts, 0, sizeof pts); memset(trcs, 0, sizeof trcs); memset(cass, 0, sizeof cass); memset(scr, 0, sizeof scr); bfFlashT = 0; goreReset();
 #endif
 }
 static float openYaw(float x, float z) {            /* mira hacia donde hay mas espacio libre */
@@ -1265,6 +1289,10 @@ static int deadPick(const Bot *b, int pref) {
     for (int i = 0; i < 3; i++) { int k = (pref + i) % 3, d = deadBad(b, k); if (d < bb) { bb = d; best = k; } if (d == 0) break; }
     return best;
 }
+#ifdef PS2_ONLINE
+/* datos del ultimo impacto (los rellena quien llama a damageBot): punto, direccion y fuerza -> ragdoll y salpicaduras */
+static int gHitOn; static float gHitP[3], gHitD[3], gHitF;
+#endif
 static void damageBot(Bot *b, float dmg, int head) {
     if (!b->alive) return;
 #ifdef PC_ONLINE
@@ -1273,8 +1301,15 @@ static void damageBot(Bot *b, float dmg, int head) {
     b->hp -= dmg;
     if (b->state == BS_PATROL || b->state == BS_SEARCH) { b->state = BS_ALERT; b->react = DIFF_REACT[S.diff] * 0.5f; b->lkx = P.x; b->lkz = P.z; }
     b->hitT = 2.0f;
+#ifdef PS2_ONLINE
+    goreHit(b, dmg, head);
+#endif
     if (b->hp <= 0) {
-        b->rg.deadKind = deadPick(b, head ? 0 : rand() % 3); b->alive = 0; b->dead = 0; kills++;
+        b->rg.deadKind = deadPick(b, head ? 0 : rand() % 3);
+#ifdef PS2_ONLINE
+        rdSpawn((int)(b - bots), dmg, head);      /* antes de marcarlo muerto: toma la pose viva como punto de partida */
+#endif
+        b->alive = 0; b->dead = 0; kills++;
         snd_play3d(SND_DEATH0 + (rand() & 1), b->x, b->z, 1.3f); if (head) heads++;
         pushFeed(head ? "BAJA - CABEZA" : "BAJA");
         if (aliveBots() == 0 && mode == M_PLAYING) endRound(1);
@@ -1341,6 +1376,9 @@ static void fireWeapon(void) {
         for (int k = 0; k < 3; k++) d[k] = f[k] + r[k] * sx + u[k] * sy;
         float L = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]); d[0] /= L; d[1] /= L; d[2] /= L;
         float tBest = wallDist(o, d, 100); Bot *hit = NULL; int head = 0;
+#ifdef PS2_ONLINE
+        tBest = rdRay(o, d, tBest);          /* los cadaveres tambien reciben balazos */
+#endif
         for (int i = 0; i < nbots; i++) {
             Bot *b = &bots[i]; if (!b->alive) continue;
             float cq = b->rg.crouch; float mn[3] = { b->x - .32f, b->py, b->z - .32f }, mx[3] = { b->x + .32f, b->py + 1.42f - 0.45f * cq, b->z + .32f }, c[3] = { b->x, b->py + 1.6f - 0.5f * cq, b->z };
@@ -1350,7 +1388,14 @@ static void fireWeapon(void) {
         if (hit) {
             float dmg = w->dmg * (head ? 2.5f : 1.0f);
             if (w->pellets > 1) dmg *= clampf(1.15f - tBest / 35, 0.25f, 1);
+#ifdef PS2_ONLINE
+            gHitOn = 1; for (int k = 0; k < 3; k++) { gHitP[k] = o[k] + d[k] * tBest; gHitD[k] = d[k]; }
+            gHitF = clampf(2.2f + dmg * 0.05f, 2, 8) * (w->pellets > 1 ? 1.7f : 1.0f);
+#endif
             damageBot(hit, dmg, head); anyHit = 1; anyHead |= head;
+#ifdef PS2_ONLINE
+            gHitOn = 0;
+#endif
         }
 #ifdef PS2_ONLINE
         if (p == 0) bfFireFx(o, d, tBest, hit != NULL); else if (!hit && (p & 1) == 0 && tBest < 99) bfImpact(o, d, tBest);
@@ -1429,8 +1474,346 @@ static void bfFan(float cx, float cy, int zd, float rad, int n, u32c cc, u32c ce
     for (int i = 0; i < n; i++) { float a = i * 6.2832f / n + 0.4f; px[i] = cx + cosf(a) * rad; py[i] = cy + sinf(a) * rad * sy; }
     for (int i = 0; i < n; i++) { int j = (i + 1) % n; gfx_tri(cx, cy, zd, cc, px[i], py[i], zd, ce, px[j], py[j], zd, ce); }
 }
+/* ---------- Ragdoll y sangre (solo PS2) ----------
+ * Al morir, cada bot pasa a una simulacion Verlet de 17 particulas (columna, cadera, hombros, cabeza, piernas con pies, mano y arma)
+ * unidas por restricciones de distancia. De las particulas se reconstruyen las 12 matrices de hueso, asi que el mismo modelo con piel
+ * se dibuja sin cambios. El impacto (direccion y fuerza del arma, explosion, cabezazo) decide como sale despedido el cuerpo.
+ * La sangre son gotas con gravedad que, al chocar con suelo, cajas o paredes, dejan manchas (pila circular fija: GORE_ND). */
+#define RD_NP 17
+#define RD_H (1.0f / 60.0f)
+#define GORE_ND 72
+#define GORE_NB 48
+enum { RP_HIP, RP_WAIST, RP_NECK, RP_HEAD, RP_HIPL, RP_HIPR, RP_KNL, RP_KNR, RP_ANL, RP_ANR, RP_TOL, RP_TOR, RP_SHL, RP_SHR, RP_HAND, RP_GRIP, RP_MUZ };
+static const struct { signed char bone; float p[3]; float r; } RPD[RD_NP] = {
+    { BN_PELVIS, { 0, 0.80f, 0 }, 0.14f }, { BN_PELVIS, { 0, 1.06f, 0 }, 0.14f }, { BN_CHEST, { 0, 1.36f, 0 }, 0.10f }, { BN_HEAD, { 0, 1.50f, 0 }, 0.14f },
+    { BN_THIGH_L, { -0.19f, 0.78f, 0 }, 0.10f }, { BN_THIGH_R, { 0.19f, 0.78f, 0 }, 0.10f },
+    { BN_SHIN_L, { -0.19f, 0.47f, 0 }, 0.09f }, { BN_SHIN_R, { 0.19f, 0.47f, 0 }, 0.09f },
+    { BN_FOOT_L, { -0.19f, 0.22f, 0 }, 0.08f }, { BN_FOOT_R, { 0.19f, 0.22f, 0 }, 0.08f },
+    { BN_FOOT_L, { -0.19f, 0.05f, -0.20f }, 0.06f }, { BN_FOOT_R, { 0.19f, 0.05f, -0.20f }, 0.06f },
+    { BN_CHEST, { -0.22f, 1.24f, 0 }, 0.10f }, { BN_CHEST, { 0.22f, 1.24f, 0 }, 0.10f },
+    { BN_ARMS, { 0.17f, 1.12f, -0.38f }, 0.07f }, { BN_WEAP, { 0.17f, 1.12f, -0.38f }, 0.05f }, { BN_WEAP, { 0.17f, 1.12f, -1.02f }, 0.05f } };
+/* restricciones: t 0 = distancia fija, 1 = distancia minima, 2 = distancia maxima; f = factor sobre la distancia de reposo; k = rigidez */
+static const struct { signed char a, b, t; float f, k; } RCN[] = {
+    { RP_HIP, RP_WAIST, 0, 1, 1 }, { RP_WAIST, RP_NECK, 0, 1, 1 },
+    { RP_HIP, RP_HIPL, 0, 1, 1 }, { RP_HIP, RP_HIPR, 0, 1, 1 }, { RP_HIPL, RP_HIPR, 0, 1, 1 }, { RP_WAIST, RP_HIPL, 0, 1, 1 }, { RP_WAIST, RP_HIPR, 0, 1, 1 },
+    { RP_WAIST, RP_SHL, 0, 1, 1 }, { RP_WAIST, RP_SHR, 0, 1, 1 }, { RP_NECK, RP_SHL, 0, 1, 1 }, { RP_NECK, RP_SHR, 0, 1, 1 }, { RP_SHL, RP_SHR, 0, 1, 1 },
+    { RP_SHL, RP_HIPL, 0, 1, 0.15f }, { RP_SHR, RP_HIPR, 0, 1, 0.15f },          /* limitan la torsion del torso */
+    { RP_HIP, RP_NECK, 1, 0.88f, 1 },                                              /* limite de flexion de la cintura */
+    { RP_NECK, RP_HEAD, 0, 1, 1 }, { RP_WAIST, RP_HEAD, 1, 0.65f, 1 },
+    { RP_HIPL, RP_KNL, 0, 1, 1 }, { RP_KNL, RP_ANL, 0, 1, 1 }, { RP_ANL, RP_TOL, 0, 1, 1 }, { RP_KNL, RP_TOL, 0, 1, 1 }, { RP_HIPL, RP_ANL, 1, 0.55f, 1 },
+    { RP_HIPR, RP_KNR, 0, 1, 1 }, { RP_KNR, RP_ANR, 0, 1, 1 }, { RP_ANR, RP_TOR, 0, 1, 1 }, { RP_KNR, RP_TOR, 0, 1, 1 }, { RP_HIPR, RP_ANR, 1, 0.55f, 1 },
+    { RP_KNL, RP_KNR, 1, 0.42f, 1 }, { RP_ANL, RP_ANR, 1, 0.40f, 1 }, { RP_TOL, RP_TOR, 1, 0.35f, 1 },
+    { RP_GRIP, RP_MUZ, 0, 1, 1 }, { RP_HAND, RP_HIP, 1, 0.5f, 1 } };
+#define RD_NC ((int)(sizeof RCN / sizeof RCN[0]))
+static float rcnRest[RD_NC]; static int rcnReady;
+typedef struct {
+    float p[RD_NP][3], q[RD_NP][3];      /* posicion actual y anterior (Verlet) */
+    M34 G[BN_N];                          /* matrices de hueso listas para dibujar */
+    float rz[BN_N][9];                    /* giro residual de cada hueso sobre su eje (se calibra con la pose viva al morir) */
+    int on, asleep, held;
+    float t, sleepT, relT, acc, bleed, bleedAcc, splatCD, wound, pr, prT, px, pz, py;
+} Ragdoll;
+typedef struct { float x, y, z, vx, vy, vz, t, sz; int on; } BDrop;
+typedef struct { float x, y, z, r, age; signed char ax; unsigned char seed; } BDec;     /* ax: 0 suelo/techo de caja, 1 +x, 2 -x, 3 +z, 4 -z (normal de la superficie) */
+static Ragdoll rds[MAXBOT]; static BDrop bdrops[GORE_NB]; static BDec bdecs[GORE_ND]; static int bdecI, bdropI;
+
+static void rvSub(const float *a, const float *b, float *o) { o[0] = a[0] - b[0]; o[1] = a[1] - b[1]; o[2] = a[2] - b[2]; }
+static float rvDot(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+static void rvCross(const float *a, const float *b, float *o) { o[0] = a[1] * b[2] - a[2] * b[1]; o[1] = a[2] * b[0] - a[0] * b[2]; o[2] = a[0] * b[1] - a[1] * b[0]; }
+static void rvNorm(float *v) { float l = sqrtf(rvDot(v, v)); if (l < 1e-6f) { v[0] = 0; v[1] = 1; v[2] = 0; return; } v[0] /= l; v[1] /= l; v[2] /= l; }
+/* base ortonormal: arriba = u, derecha = r (ortogonalizada contra u), atras = r x u. R guarda las columnas r, u, atras. */
+static void rvFrame(float *R, const float *u0, const float *r0) {
+    float u[3] = { u0[0], u0[1], u0[2] }, r[3], b[3]; rvNorm(u);
+    float k = rvDot(r0, u); r[0] = r0[0] - u[0] * k; r[1] = r0[1] - u[1] * k; r[2] = r0[2] - u[2] * k;
+    if (rvDot(r, r) < 1e-8f) { float t[3] = { 1, 0, 0 }; if (fabsf(u[0]) > 0.9f) { t[0] = 0; t[2] = 1; } k = rvDot(t, u); r[0] = t[0] - u[0] * k; r[1] = t[1] - u[1] * k; r[2] = t[2] - u[2] * k; }
+    rvNorm(r); rvCross(r, u, b);
+    for (int i = 0; i < 3; i++) { R[i * 3] = r[i]; R[i * 3 + 1] = u[i]; R[i * 3 + 2] = b[i]; }
+}
+/* rotacion mas corta que lleva el vector unitario a hacia c (3x3 por filas) */
+static void rvArc(float *R, const float *a, const float *c) {
+    float v[3], cs = rvDot(a, c); rvCross(a, c, v);
+    if (cs > -0.9999f) {
+        float k = 1.0f / (1.0f + cs), vv = rvDot(v, v);
+        R[0] = 1 + k * (v[0] * v[0] - vv); R[1] = -v[2] + k * v[0] * v[1];  R[2] = v[1] + k * v[0] * v[2];
+        R[3] = v[2] + k * v[1] * v[0];     R[4] = 1 + k * (v[1] * v[1] - vv); R[5] = -v[0] + k * v[1] * v[2];
+        R[6] = -v[1] + k * v[2] * v[0];    R[7] = v[0] + k * v[2] * v[1];  R[8] = 1 + k * (v[2] * v[2] - vv);
+    } else {
+        float t[3] = { 1, 0, 0 }, k[3]; if (fabsf(a[0]) > 0.9f) { t[0] = 0; t[1] = 1; } rvCross(a, t, k); rvNorm(k);
+        for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) R[i * 3 + j] = 2 * k[i] * k[j] - (i == j ? 1 : 0);
+    }
+}
+/* hueso hijo: rota desde el marco del padre Rp para que su eje de reposo `rest` apunte a `cur` (mundo) */
+static void rvBone(float *Rout, const float *Rp, const float *rest, const float *cur) {
+    float a[3] = { rest[0], rest[1], rest[2] }, c[3] = { cur[0], cur[1], cur[2] }, cl[3], A[9]; rvNorm(a); rvNorm(c);
+    for (int i = 0; i < 3; i++) cl[i] = Rp[i] * c[0] + Rp[3 + i] * c[1] + Rp[6 + i] * c[2];     /* Rp^T * c */
+    rvArc(A, a, cl);
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) Rout[i * 3 + j] = Rp[i * 3] * A[j] + Rp[i * 3 + 1] * A[3 + j] + Rp[i * 3 + 2] * A[6 + j];
+}
+static void rvSetG(M34 *g, const float *R, const float *P, const float *piv) {
+    for (int i = 0; i < 3; i++) { for (int j = 0; j < 3; j++) g->m[i * 4 + j] = R[i * 3 + j]; g->m[i * 4 + 3] = P[i] - (R[i * 3] * piv[0] + R[i * 3 + 1] * piv[1] + R[i * 3 + 2] * piv[2]); }
+}
+/* torso: marcos de pelvis (Rp) y pecho (Rc) y pivote del pecho (Pc) a partir de las particulas */
+static void rdTorso(float p[][3], float *Rp, float *Rc, float *Pc) {
+    float up[3], r[3];
+    rvSub(p[RP_WAIST], p[RP_HIP], up); rvSub(p[RP_HIPR], p[RP_HIPL], r); rvFrame(Rp, up, r);
+    float u2[3] = { Rp[1], Rp[4], Rp[7] }, d = BN_PIV[BN_CHEST][1] - BN_PIV[BN_PELVIS][1];
+    for (int i = 0; i < 3; i++) Pc[i] = p[RP_HIP][i] + u2[i] * d;
+    rvSub(p[RP_NECK], Pc, up); rvSub(p[RP_SHR], p[RP_SHL], r); rvFrame(Rc, up, r);
+}
+static void rdRest(int i, const float *from, float *o) { for (int k = 0; k < 3; k++) o[k] = RPD[i].p[k] - from[k]; }
+/* rotacion de un hueso con un solo eje: arco mas corto desde el marco del padre + giro residual rz (si calib != NULL, se calcula con la pose viva) */
+static void rdBoneR(float *Rout, const float *Rpar, const float *rest, const float *cur, int bone, float (*rz)[9], const M34 *calib) {
+    float A[9]; rvBone(A, Rpar, rest, cur);
+    if (calib) for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) rz[bone][i * 3 + j] = A[i] * calib[bone].m[j] + A[3 + i] * calib[bone].m[4 + j] + A[6 + i] * calib[bone].m[8 + j];
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) Rout[i * 3 + j] = A[i * 3] * rz[bone][j] + A[i * 3 + 1] * rz[bone][3 + j] + A[i * 3 + 2] * rz[bone][6 + j];
+}
+/* particulas -> matrices de hueso. fo: 0..1 relajacion del antebrazo izquierdo */
+static void rdBuild(float p[][3], M34 *G, float fo, float (*rz)[9], const M34 *calib) {
+    float Rp[9], Rc[9], Rt[9], Pc[3], dir[3], rs[3], Pa[3], v[3];
+    rdTorso(p, Rp, Rc, Pc);
+    rvSetG(&G[BN_PELVIS], Rp, p[RP_HIP], BN_PIV[BN_PELVIS]);
+    rvSetG(&G[BN_CHEST], Rc, Pc, BN_PIV[BN_CHEST]);
+    rdRest(RP_HEAD, BN_PIV[BN_HEAD], rs); rvSub(p[RP_HEAD], p[RP_NECK], dir); rdBoneR(Rt, Rc, rs, dir, BN_HEAD, rz, calib); rvSetG(&G[BN_HEAD], Rt, p[RP_NECK], BN_PIV[BN_HEAD]);
+    for (int s = 0; s < 2; s++) {
+        int th = s ? BN_THIGH_R : BN_THIGH_L, sh = s ? BN_SHIN_R : BN_SHIN_L, ft = s ? BN_FOOT_R : BN_FOOT_L;
+        int ph = s ? RP_HIPR : RP_HIPL, pk = s ? RP_KNR : RP_KNL, pa = s ? RP_ANR : RP_ANL, pt = s ? RP_TOR : RP_TOL;
+        float R1[9], R2[9], R3[9];
+        rdRest(pk, BN_PIV[th], rs); rvSub(p[pk], p[ph], dir); rdBoneR(R1, Rp, rs, dir, th, rz, calib); rvSetG(&G[th], R1, p[ph], BN_PIV[th]);
+        rdRest(pa, BN_PIV[sh], rs); rvSub(p[pa], p[pk], dir); rdBoneR(R2, R1, rs, dir, sh, rz, calib); rvSetG(&G[sh], R2, p[pk], BN_PIV[sh]);
+        rdRest(pt, BN_PIV[ft], rs); rvSub(p[pt], p[pa], dir); rdBoneR(R3, R2, rs, dir, ft, rz, calib); rvSetG(&G[ft], R3, p[pa], BN_PIV[ft]);
+    }
+    /* brazos: el hombro va fijo al pecho, el eje apunta a la mano */
+    for (int i = 0; i < 3; i++) v[i] = BN_PIV[BN_ARMS][i] - BN_PIV[BN_CHEST][i];
+    for (int i = 0; i < 3; i++) Pa[i] = Pc[i] + Rc[i * 3] * v[0] + Rc[i * 3 + 1] * v[1] + Rc[i * 3 + 2] * v[2];
+    rdRest(RP_HAND, BN_PIV[BN_ARMS], rs); rvSub(p[RP_HAND], Pa, dir); rdBoneR(Rt, Rc, rs, dir, BN_ARMS, rz, calib); rvSetG(&G[BN_ARMS], Rt, Pa, BN_PIV[BN_ARMS]);
+    { M34 B; m34Rot(&B, -0.6f * fo, 0, -0.5f * fo); const float *pv = BN_PIV[BN_FORE_L];
+      for (int i = 0; i < 3; i++) B.m[i * 4 + 3] = pv[i] - (B.m[i * 4] * pv[0] + B.m[i * 4 + 1] * pv[1] + B.m[i * 4 + 2] * pv[2]);
+      m34Mul(&G[BN_FORE_L], &G[BN_ARMS], &B); }
+    { float Rw[9]; rvSub(RPD[RP_MUZ].p, RPD[RP_GRIP].p, rs); rvSub(p[RP_MUZ], p[RP_GRIP], dir); rdBoneR(Rw, Rt, rs, dir, BN_WEAP, rz, calib); rvSetG(&G[BN_WEAP], Rw, p[RP_GRIP], BN_PIV[BN_WEAP]); }
+}
+
+/* ---- sangre ---- */
+static void decalAdd(float x, float y, float z, int ax, float r) {
+    BDec *d = &bdecs[bdecI++ % GORE_ND]; d->x = x; d->y = y; d->z = z; d->ax = (signed char)ax; d->r = r; d->age = 0; d->seed = (unsigned char)(rand() & 255);
+}
+static void bloodBurst(const float *pos, const float *dir, int n, float spd, float spread, float sz) {
+    for (int i = 0; i < n; i++) {
+        BDrop *d = &bdrops[bdropI++ % GORE_NB]; float k = spd * rndf(0.35f, 1.15f);
+        d->on = 1; d->x = pos[0]; d->y = pos[1]; d->z = pos[2]; d->t = 2.5f; d->sz = sz * rndf(0.6f, 1.4f);
+        d->vx = dir[0] * k + rndf(-1, 1) * spread * spd; d->vy = dir[1] * k + rndf(-0.3f, 1) * spread * spd; d->vz = dir[2] * k + rndf(-1, 1) * spread * spd;
+    }
+}
+static void bloodUpdate(float dt) {
+    for (int i = 0; i < GORE_NB; i++) {
+        BDrop *d = &bdrops[i]; if (!d->on) continue;
+        d->t -= dt; if (d->t <= 0) { d->on = 0; continue; }
+        d->vy -= 9.8f * dt; float k = fmaxf(0, 1 - 0.6f * dt); d->vx *= k; d->vz *= k;
+        float mv = sqrtf(d->vx * d->vx + d->vy * d->vy + d->vz * d->vz) * dt; int ns = (int)(mv / 0.12f) + 1; if (ns > 6) ns = 6;
+        float sdt = dt / ns;
+        for (int s = 0; s < ns && d->on; s++) {
+            float ox = d->x, oy = d->y, oz = d->z;
+            d->x += d->vx * sdt; d->y += d->vy * sdt; d->z += d->vz * sdt;
+            if (d->y <= 0) { decalAdd(d->x, 0, d->z, 0, d->sz); d->on = 0; break; }
+            for (int j = 0; j < nbox; j++) {
+                const Box *b = &boxes[j];
+                if (d->x <= b->x0 || d->x >= b->x1 || d->z <= b->z0 || d->z >= b->z1 || d->y >= b->top) continue;
+                if (oy >= b->top) decalAdd(d->x, b->top, d->z, 0, d->sz);
+                else if (ox <= b->x0) decalAdd(b->x0, d->y, d->z, 2, d->sz);
+                else if (ox >= b->x1) decalAdd(b->x1, d->y, d->z, 1, d->sz);
+                else if (oz <= b->z0) decalAdd(d->x, d->y, b->z0, 4, d->sz);
+                else if (oz >= b->z1) decalAdd(d->x, d->y, b->z1, 3, d->sz);
+                else decalAdd(d->x, b->top, d->z, 0, d->sz);
+                d->on = 0; break;
+            }
+            if (!d->on) break;
+            if (d->x < -HALF) { decalAdd(-HALF, d->y, d->z, 1, d->sz); d->on = 0; }
+            else if (d->x > HALF) { decalAdd(HALF, d->y, d->z, 2, d->sz); d->on = 0; }
+            else if (d->z < -HALF) { decalAdd(d->x, d->y, -HALF, 3, d->sz); d->on = 0; }
+            else if (d->z > HALF) { decalAdd(d->x, d->y, HALF, 4, d->sz); d->on = 0; }
+        }
+    }
+    for (int i = 0; i < GORE_ND; i++) if (bdecs[i].r > 0 && bdecs[i].age < 60) bdecs[i].age += dt;
+}
+/* salpicadura de cada impacto: sale por detras del objetivo (hacia donde iba la bala) y un poco de niebla hacia el tirador */
+static void goreHit(Bot *b, float dmg, int head) {
+    float hp[3], D[3];
+    if (gHitOn) { for (int i = 0; i < 3; i++) { hp[i] = gHitP[i]; D[i] = gHitD[i]; } }
+    else { hp[0] = b->x; hp[1] = b->py + 1.2f; hp[2] = b->z; D[0] = b->x - P.x; D[1] = 0.1f; D[2] = b->z - P.z; rvNorm(D); }
+    int n = 3 + (int)(dmg / 10); if (n > 14) n = 14; if (head) n += 4;
+    bloodBurst(hp, D, n, 4.0f + clampf(dmg / 25, 0, 4), 0.30f, 0.07f + clampf(dmg / 600, 0, 0.06f));
+    float nd[3] = { -D[0], -D[1], -D[2] }; bloodBurst(hp, nd, 2, 1.8f, 0.5f, 0.05f);
+}
+static void goreReset(void) { memset(rds, 0, sizeof rds); memset(bdrops, 0, sizeof bdrops); memset(bdecs, 0, sizeof bdecs); bdecI = bdropI = 0; }
+
+/* ---- ragdoll ---- */
+static void rdPush(Ragdoll *rd, const float *P, const float *D, float F) {
+    for (int i = 0; i < RD_NP; i++) {
+        float d[3]; rvSub(rd->p[i], P, d); float w = expf(-rvDot(d, d) / 0.30f), a = F * (0.30f + 1.1f * w) * RD_H;
+        rd->q[i][0] -= D[0] * a; rd->q[i][1] -= D[1] * a + F * 0.10f * RD_H; rd->q[i][2] -= D[2] * a;
+    }
+    rd->asleep = 0; rd->sleepT = 0;
+}
+static void rdSpawn(int idx, float dmg, int head) {
+    Bot *b = &bots[idx]; Ragdoll *rd = &rds[idx]; Rig g = b->rg; SkPose po; M34 G[BN_N];
+    memset(rd, 0, sizeof *rd);
+    g.pist = 0; rigPose(&g, &po); rigAimPitch(&g, &po, b->pitch); rigReload(&g, &po, b->rl ? clampf(b->rlT / 1.7f, 0, 1) : -1.0f);
+    rigSolve(&po, b->x, b->py, b->z, b->yaw, G);
+    float fx = -sinf(b->yaw), fz = -cosf(b->yaw), rx = cosf(b->yaw), rz = -sinf(b->yaw);
+    float v0[3] = { (g.vfS * fx + g.vsS * rx) * 0.9f, 0, (g.vfS * fz + g.vsS * rz) * 0.9f };
+    float j[3] = { rndf(-0.3f, 0.3f), 0, rndf(-0.3f, 0.3f) };
+    for (int i = 0; i < RD_NP; i++) {
+        m34Xf(&G[(int)RPD[i].bone], RPD[i].p, rd->p[i]);
+        for (int k = 0; k < 3; k++) rd->q[i][k] = rd->p[i][k] - (v0[k] + j[k]) * RD_H;
+    }
+    rd->on = 1; rd->held = 1; rd->relT = rndf(0.15f, 0.45f); rd->wound = clampf(0.5f + dmg / 120.0f + (head ? 0.3f : 0), 0.5f, 1);
+    rd->bleed = 1.0f + rd->wound; rd->prT = clampf(0.30f + dmg / 160.0f * 0.5f + (head ? 0.15f : 0), 0.30f, 1.10f);
+    float hp[3] = { b->x, b->py + 1.2f, b->z }, D[3] = { -fx, 0.1f, -fz }, F = 3.0f;
+    if (gHitOn) { for (int i = 0; i < 3; i++) { hp[i] = gHitP[i]; D[i] = gHitD[i]; } F = gHitF; }
+    else { D[0] = b->x - P.x; D[2] = b->z - P.z; rvNorm(D); }
+    F = clampf(F * (1 + clampf(-b->hp / 60.0f, 0, 1.2f)), 0, 12);        /* sobredano = mas fuerza */
+    rdPush(rd, hp, D, F);
+    if (head) { float hd[3] = { D[0], D[1] + 0.3f, D[2] }; rvNorm(hd); float a = F * 0.8f * RD_H;
+        for (int k = 0; k < 3; k++) { rd->q[RP_HEAD][k] -= hd[k] * a; rd->q[RP_NECK][k] -= hd[k] * a * 0.5f; } }
+    { float up[3] = { D[0] * 0.5f, 0.5f, D[2] * 0.5f }; rvNorm(up);
+      bloodBurst(hp, D, 6 + (int)clampf(dmg / 10, 0, 10) + (head ? 6 : 0), 3.5f + F * 0.3f, 0.45f, 0.09f);
+      if (head) bloodBurst(hp, up, 6, 3.0f, 0.5f, 0.07f); }
+    rd->px = rd->p[RP_HIP][0]; rd->pz = rd->p[RP_HIP][2];
+    rdBuild(rd->p, rd->G, 0, rd->rz, G);
+}
+static void rdCollide(Ragdoll *rd, int i, const Box **nb, int nn) {
+    float *p = rd->p[i], *q = rd->q[i], r = RPD[i].r;
+    float vy = p[1] - q[1], vh = sqrtf((p[0] - q[0]) * (p[0] - q[0]) + (p[2] - q[2]) * (p[2] - q[2])) / RD_H;
+    for (int j = 0; j < nn; j++) {
+        const Box *b = nb[j];
+        if (p[0] < b->x0 - r || p[0] > b->x1 + r || p[2] < b->z0 - r || p[2] > b->z1 + r || p[1] - r >= b->top) continue;
+        float up = b->top + r - p[1], pl = p[0] - (b->x0 - r), pr = (b->x1 + r) - p[0], zl = p[2] - (b->z0 - r), zr = (b->z1 + r) - p[2];
+        float mh = pl; int ax = 2; if (pr < mh) { mh = pr; ax = 1; } if (zl < mh) { mh = zl; ax = 4; } if (zr < mh) { mh = zr; ax = 3; }
+        if (up <= mh || up < 0.12f) {
+            p[1] = b->top + r; if (vy < -0.02f) q[1] = p[1] + 0.25f * vy; else q[1] = p[1];
+            q[0] += (p[0] - q[0]) * 0.35f; q[2] += (p[2] - q[2]) * 0.35f;
+            if (vy / RD_H < -4.0f && rd->splatCD <= 0 && i < RP_HAND) { decalAdd(p[0], b->top, p[2], 0, 0.10f + rd->wound * 0.12f); rd->splatCD = 0.15f; }
+        } else {
+            if (ax == 2) { p[0] = b->x0 - r; q[0] = p[0]; } else if (ax == 1) { p[0] = b->x1 + r; q[0] = p[0]; }
+            else if (ax == 4) { p[2] = b->z0 - r; q[2] = p[2]; } else { p[2] = b->z1 + r; q[2] = p[2]; }
+            if (vh > 3.5f && rd->splatCD <= 0 && i < RP_HAND) {      /* cuerpo estampado contra la pared: mancha segun la velocidad */
+                float sx = ax == 2 ? b->x0 : (ax == 1 ? b->x1 : p[0]), sz = ax == 4 ? b->z0 : (ax == 3 ? b->z1 : p[2]);
+                decalAdd(sx, p[1], sz, ax, clampf(0.05f * vh, 0.12f, 0.45f) * rd->wound); rd->splatCD = 0.15f;
+            }
+        }
+    }
+    if (p[1] < r) {
+        p[1] = r; if (vy < -0.02f) q[1] = p[1] + 0.25f * vy; else q[1] = p[1];
+        q[0] += (p[0] - q[0]) * 0.35f; q[2] += (p[2] - q[2]) * 0.35f;
+        if (vy / RD_H < -3.5f && rd->splatCD <= 0 && i < RP_HAND) { decalAdd(p[0], 0, p[2], 0, clampf(-vy / RD_H * 0.035f, 0.10f, 0.35f) * rd->wound); rd->splatCD = 0.15f; }
+    }
+    float lim = HALF - r;
+    if (p[0] < -lim) { p[0] = -lim; q[0] = p[0]; } if (p[0] > lim) { p[0] = lim; q[0] = p[0]; }
+    if (p[2] < -lim) { p[2] = -lim; q[2] = p[2]; } if (p[2] > lim) { p[2] = lim; q[2] = p[2]; }
+}
+static void rdStep(Ragdoll *rd) {
+    const Box *nb[28]; int nn = 0;
+    if (!rcnReady) { for (int c = 0; c < RD_NC; c++) { float d[3]; rvSub(RPD[(int)RCN[c].a].p, RPD[(int)RCN[c].b].p, d); rcnRest[c] = sqrtf(rvDot(d, d)); } rcnReady = 1; }
+    rd->t += RD_H; if (rd->splatCD > 0) rd->splatCD -= RD_H;
+    if (rd->held && rd->t > rd->relT) rd->held = 0;
+    for (int i = 0; i < RD_NP; i++) for (int k = 0; k < 3; k++) { float v = (rd->p[i][k] - rd->q[i][k]) * 0.997f; rd->q[i][k] = rd->p[i][k]; rd->p[i][k] += v; }
+    for (int i = 0; i < RD_NP; i++) rd->p[i][1] -= 9.8f * RD_H * RD_H;
+    for (int j = 0; j < nbox && nn < 28; j++) {       /* solo las cajas cercanas al cuerpo */
+        const Box *b = &boxes[j]; float cx = rd->p[RP_HIP][0], cz = rd->p[RP_HIP][2];
+        if (cx > b->x0 - 2.6f && cx < b->x1 + 2.6f && cz > b->z0 - 2.6f && cz < b->z1 + 2.6f) nb[nn++] = b;
+    }
+    float Rp[9], Rc[9], Pc[3], sh[3], L = 0;
+    { float rs[3]; rdRest(RP_HAND, BN_PIV[BN_ARMS], rs); L = sqrtf(rvDot(rs, rs)); }
+    rdTorso(rd->p, Rp, Rc, Pc);
+    { float v[3]; for (int i = 0; i < 3; i++) v[i] = BN_PIV[BN_ARMS][i] - BN_PIV[BN_CHEST][i];
+      for (int i = 0; i < 3; i++) sh[i] = Pc[i] + Rc[i * 3] * v[0] + Rc[i * 3 + 1] * v[1] + Rc[i * 3 + 2] * v[2]; }
+    for (int it = 0; it < 4; it++) {
+        for (int c = 0; c < RD_NC; c++) {
+            float *a = rd->p[(int)RCN[c].a], *b = rd->p[(int)RCN[c].b], d[3]; rvSub(b, a, d);
+            float len = sqrtf(rvDot(d, d)), tg = rcnRest[c] * RCN[c].f; if (len < 1e-6f) continue;
+            if ((RCN[c].t == 1 && len >= tg) || (RCN[c].t == 2 && len <= tg)) continue;
+            float k = (len - tg) / len * 0.5f * RCN[c].k;
+            for (int m = 0; m < 3; m++) { a[m] += d[m] * k; b[m] -= d[m] * k; }
+        }
+        { float *h = rd->p[RP_HAND], d[3]; rvSub(h, sh, d); float len = sqrtf(rvDot(d, d)); if (len > 1e-6f) for (int m = 0; m < 3; m++) h[m] = sh[m] + d[m] * (L / len); }
+        if (rd->held) for (int m = 0; m < 3; m++) rd->p[RP_GRIP][m] = rd->p[RP_HAND][m];
+        for (int i = 0; i < RD_NP; i++) { if (rd->held && i == RP_GRIP) continue; rdCollide(rd, i, nb, nn); }
+    }
+    float mv = 0; for (int i = 0; i < RD_NP; i++) { float d[3]; rvSub(rd->p[i], rd->q[i], d); float l = rvDot(d, d); if (l > mv) mv = l; }
+    if (mv < 0.003f * 0.003f) rd->sleepT += RD_H; else rd->sleepT = 0;      /* ~0,18 m/s */
+    if (rd->sleepT > 0.4f || rd->t > 7.0f) rd->asleep = 1;
+}
+static void rdUpdate(float dt) {
+    for (int i = 0; i < nbots; i++) {
+        Ragdoll *rd = &rds[i]; if (!rd->on) continue;
+        if (!rd->asleep) {
+            rd->acc += dt; if (rd->acc > 0.1f) rd->acc = 0.1f;
+            while (rd->acc >= RD_H) { rd->acc -= RD_H; rdStep(rd); if (rd->asleep) break; }
+            rdBuild(rd->p, rd->G, sstep(0.0f, 0.4f, rd->t), rd->rz, NULL);
+            if (!rd->asleep && rd->t < 3.0f) { rd->px = rd->p[RP_HIP][0]; rd->pz = rd->p[RP_HIP][2]; }
+        }
+        if (rd->bleed > 0) {                    /* sigue sangrando: rastro en el suelo mientras el cuerpo se arrastra */
+            rd->bleed -= dt; rd->bleedAcc += dt;
+            if (rd->bleedAcc > 0.12f) { rd->bleedAcc = 0; float d[3] = { 0, -0.2f, 0 }; bloodBurst(rd->p[(rd->t * 8 > 1 && ((int)(rd->t * 20) & 1)) ? RP_WAIST : RP_HIP], d, 1, 0.8f, 0.8f, 0.06f); }
+        }
+        if (rd->t > 0.4f) rd->pr += (rd->prT - rd->pr) * clampf(dt * 0.6f, 0, 1);      /* charco que crece bajo el cuerpo */
+        rd->py = groundAt(rd->px, rd->pz, rd->p[RP_HIP][1] + 0.3f, 0.1f) + 0.012f;
+    }
+}
+static void goreUpdate(float dt) { rdUpdate(dt); bloodUpdate(dt); }
+/* bala contra cadaveres: el cuerpo se mueve y suelta sangre; devuelve la distancia del choque o t si no hay */
+static float rdRay(const float *o, const float *d, float t) {
+    int hi = -1;
+    for (int i = 0; i < nbots; i++) {
+        if (!rds[i].on) continue;
+        for (int k = 0; k < RP_HAND; k++) { float s = raySphere(o, d, rds[i].p[k], RPD[k].r + 0.05f); if (s < t) { t = s; hi = i; } }
+    }
+    if (hi >= 0) {
+        float hp[3] = { o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t }; Ragdoll *rd = &rds[hi];
+        rdPush(rd, hp, d, 1.5f + W[wsel].dmg * 0.04f * (W[wsel].pellets > 1 ? 1.5f : 1.0f));
+        if (rd->wound > 0.3f) bloodBurst(hp, d, 3, 3.0f, 0.4f, 0.06f);
+    }
+    return t;
+}
+/* manchas: se proyectan como abanicos irregulares pegados a la superficie (suelo, caja o pared) */
+static void goreFan(const float *c, const float *ta, const float *tb, float r, int n, u32c cc, u32c ce, unsigned seed, float sa, float sb) {
+    float X[9], Y[9]; int Z[9], ok = 1; float ps;
+    if (n > 8) n = 8;
+    for (int i = 0; i < n && ok; i++) {
+        seed = seed * 1664525u + 1013904223u; float rr = r * (0.6f + 0.6f * ((seed >> 8) & 255) / 255.0f), a = i * 6.2832f / n + 0.5f;
+        float cs = cosf(a) * rr * sa, sn = sinf(a) * rr * sb;
+        ok = bfProj(c[0] + ta[0] * cs + tb[0] * sn, c[1] + ta[1] * cs + tb[1] * sn, c[2] + ta[2] * cs + tb[2] * sn, &X[i], &Y[i], &Z[i], &ps);
+    }
+    float cx, cy; int cz; if (!ok || !bfProj(c[0], c[1], c[2], &cx, &cy, &cz, &ps)) return;
+    for (int i = 0; i < n; i++) { int j = (i + 1) % n; gfx_tri(cx, cy, cz, cc, X[i], Y[i], Z[i], ce, X[j], Y[j], Z[j], ce); }
+}
+static void goreDraw(void) {
+    static const float N6[5][3] = { { 0, 1, 0 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+    static const float TA[5][3] = { { 1, 0, 0 }, { 0, 0, 1 }, { 0, 0, 1 }, { 1, 0, 0 }, { 1, 0, 0 } }, TB[5][3] = { { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 }, { 0, 1, 0 }, { 0, 1, 0 } };
+    float sx, sy, ps; int zd;
+    for (int i = 0; i < nbots; i++) {            /* charcos */
+        const Ragdoll *rd = &rds[i]; if (!rd->on || rd->pr < 0.05f) continue;
+        float c[3] = { rd->px, rd->py, rd->pz }; if (!bfProj(c[0], c[1], c[2], &sx, &sy, &zd, &ps) || rd->pr * ps < 1.0f) continue;
+        goreFan(c, TA[0], TB[0], rd->pr, 8, RGBA(104, 8, 10, 215), RGBA(84, 6, 8, 200), (unsigned)(i * 7919 + 13), 1, 1);
+    }
+    for (int i = 0; i < GORE_ND; i++) {
+        const BDec *d = &bdecs[i]; if (d->r <= 0) continue;
+        int ax = d->ax; float c[3] = { d->x + N6[ax][0] * 0.012f, d->y + N6[ax][1] * 0.012f, d->z + N6[ax][2] * 0.012f };
+        float ex = camX - c[0], ey = camY - c[1], ez = camZ - c[2];
+        if (ex * N6[ax][0] + ey * N6[ax][1] + ez * N6[ax][2] <= 0) continue;                   /* se ve desde el lado de la superficie */
+        if (ex * ex + ey * ey + ez * ez > 38.0f * 38.0f) continue;
+        if (!bfProj(c[0], c[1], c[2], &sx, &sy, &zd, &ps) || d->r * ps < 0.8f) continue;
+        float u = clampf(d->age / 25.0f, 0, 1); int cr = (int)lerpf(150, 82, u), cg = (int)lerpf(10, 6, u), cb = (int)lerpf(12, 8, u);
+        int n = d->r * ps > 6 ? 6 : 4;
+        goreFan(c, TA[ax], TB[ax], d->r, n, RGBA(cr, cg, cb, 225), RGBA(cr * 0.8f, cg, cb, 205), d->seed, 1, ax ? 1.25f : 1);
+        if (ax && d->r > 0.09f) {                                                                 /* chorreo hacia abajo en las paredes */
+            float c2[3] = { c[0], c[1] - d->r * 1.6f, c[2] };
+            goreFan(c2, TA[ax], TB[ax], d->r * 0.35f, 4, RGBA(cr, cg, cb, 205), RGBA(cr, cg, cb, 190), d->seed + 5u, 0.7f, 2.2f);
+        }
+    }
+}
 static void bfDrawFx(void) {
     float sx, sy, ps; int zd;
+    goreDraw();
     for (int i = 0; i < 10; i++) if (trcs[i].t > 0) {       /* trazadoras */
         float x2, y2, ps2; int z2; if (!bfProj(trcs[i].x, trcs[i].y, trcs[i].z, &sx, &sy, &zd, &ps) || !bfProj(trcs[i].tx, trcs[i].ty, trcs[i].tz, &x2, &y2, &z2, &ps2)) continue;
         float dx = x2 - sx, dy = y2 - sy, L = sqrtf(dx * dx + dy * dy); if (L < 1) continue; float nx = -dy / L * 0.9f * SH / 224.0f, ny = dx / L * 0.9f * SH / 224.0f;
@@ -1494,7 +1877,14 @@ static void bfExplode(Nade *n) {
         float c[3] = { b->x, b->py + 0.95f - 0.4f * b->rg.crouch, b->z }, d[3] = { c[0] - o[0], c[1] - o[1], c[2] - o[2] };
         float L = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]); if (L > R) continue;
         if (L > 0.01f) { d[0] /= L; d[1] /= L; d[2] /= L; if (wallDist(o, d, L) < L - 0.4f) continue; }   /* una pared tapa la onda */
+#ifdef PS2_ONLINE
+        { float dd[3] = { d[0], d[1] + 0.6f, d[2] }; if (L <= 0.01f) { dd[0] = dd[2] = 0; } float dl = sqrtf(dd[0] * dd[0] + dd[1] * dd[1] + dd[2] * dd[2]); if (dl > 1e-4f) { dd[0] /= dl; dd[1] /= dl; dd[2] /= dl; } else dd[1] = 1;
+          gHitOn = 1; for (int k = 0; k < 3; k++) { gHitP[k] = c[k]; gHitD[k] = dd[k]; } gHitF = 4.0f + 7.0f * (1 - L / R); }
+#endif
         damageBot(b, 170.0f * (1 - L / R), 0);
+#ifdef PS2_ONLINE
+        gHitOn = 0;
+#endif
     }
     { float c[3] = { P.x, P.y + 1.0f - 0.4f * P.cr, P.z }, d[3] = { c[0] - o[0], c[1] - o[1], c[2] - o[2] };
       float L = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
@@ -1721,7 +2111,11 @@ static void mpHandle(Pk *p, unsigned ip, int port) {
         int alive = rd8(p); b->hp = (float)rd8(p); b->wep = rd8(p); int shots = rd8(p);
         int fl = rd8(p); b->crWant = fl & 1; b->aimW = (fl & 2) ? 1.0f : 0.0f; if ((fl & 4) && !b->rl) b->rlT = 0; b->rl = (fl & 4) != 0;
         if (shots != (b->shots & 255)) { b->fireEv = 1; snd_play3d(SND_PISTOL + (b->wep == 3 ? 1 : (b->wep & 3)), b->x, b->z, 1.0f); b->shots = shots; }
-        if (!alive && b->alive && mode == M_PLAYING) { b->rg.deadKind = deadPick(b, rand() % 3); b->alive = 0; b->dead = 0; kills++; snd_play3d(SND_DEATH0 + (rand() & 1), b->x, b->z, 1.3f); pushFeed("BAJA"); }
+        if (!alive && b->alive && mode == M_PLAYING) { b->rg.deadKind = deadPick(b, rand() % 3);
+#ifdef PS2_ONLINE
+            rdSpawn((int)(b - bots), 60.0f, 0);
+#endif
+            b->alive = 0; b->dead = 0; kills++; snd_play3d(SND_DEATH0 + (rand() & 1), b->x, b->z, 1.3f); pushFeed("BAJA"); }
         break; }
     default: break;
     }
@@ -1980,12 +2374,17 @@ static void botPart(const Bot *b, float lx, float ly, float lz, float hw, float 
     obox(b->x + lx * co + lz * s, ly, b->z - lx * s + lz * co, hw, hh, hd, b->yaw, c);
 }
 /* Dibuja un soldado con piel por vertice. weap: 0 pistola (oculta el fusil y dibuja una pistola), 2 escopeta (madera), otros fusil. */
+static const M34 *rigOverG = NULL;      /* si no es NULL, drawRig usa estas matrices de hueso (ragdoll) en vez de la animacion */
 static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, int weap, float wx, float wy, float wz, float yaw, float tr, float tg, float tb, float flash) {
+    if (!sphereVis(wx, wy + 0.9f, wz, 1.8f)) return;     /* fuera de la vista: no se transforma */
     static float tv[600][3];
     SkPose po; M34 G[BN_N];
-    Rig gl = *g; gl.pist = (weap == 0); rigPose(&gl, &po);
-    rigAimPitch(&gl, &po, pitch); rigReload(&gl, &po, reloadU);
-    rigSolve(&po, wx, wy, wz, yaw, G);
+    if (rigOverG) memcpy(G, rigOverG, sizeof G);
+    else {
+        Rig gl = *g; gl.pist = (weap == 0); rigPose(&gl, &po);
+        rigAimPitch(&gl, &po, pitch); rigReload(&gl, &po, reloadU);
+        rigSolve(&po, wx, wy, wz, yaw, G);
+    }
     for (int i = 0; i < m->nv && i < 600; i++) {
         const float *p = &m->v[i * 3]; const unsigned char *s = &m->vb[i * 3];
         float a[3], b[3], w = s[2] / 255.0f;
@@ -1994,7 +2393,7 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
         m34Xf(&G[s[1]], p, b);
         tv[i][0] = a[0] * w + b[0] * (1 - w); tv[i][1] = a[1] * w + b[1] * (1 - w); tv[i][2] = a[2] * w + b[2] * (1 - w);
     }
-    if (g->dead) {      /* cuerpo caido: se apoya exactamente sobre el suelo (ni flotando ni hundido) */
+    if (g->dead && !rigOverG) {      /* cuerpo caido: se apoya exactamente sobre el suelo (ni flotando ni hundido) */
         float lo = 1e9f; for (int i = 0; i < m->nv && i < 600; i++) if (tv[i][1] < lo) lo = tv[i][1];
         float gnd = groundAt(wx, wz, wy + 0.3f, 0.2f), dy = gnd - lo;
         if (g->deadT > 0.15f) for (int i = 0; i < m->nv && i < 600; i++) tv[i][1] += dy;
@@ -2024,8 +2423,18 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
         emitPoly(v, 4, 0);
     }
     if (weap == 0 && !g->dead) {       /* pistola: corredera y empunadura, sujetas por el hueso del arma */
-        static const float bxs[2][6] = { { 0.145f, 0.195f, 1.09f, 1.17f, -0.62f, -0.30f }, { 0.152f, 0.188f, 0.98f, 1.09f, -0.36f, -0.30f } };
-        for (int bi = 0; bi < 2; bi++) {
+        /* HK VP70Z: x0, x1, y0, y1, z0, z1, tipo (0 = metal, 1 = polimero). Las 3 primeras cajas bastan de lejos (nivel de detalle). */
+        static const float bxs[7][7] = {
+            { 0.147f, 0.193f, 1.113f, 1.173f, -0.62f, -0.30f, 0 },      /* corredera */
+            { 0.151f, 0.189f, 1.015f, 1.083f, -0.416f, -0.30f, 1 },     /* empunadura superior */
+            { 0.151f, 0.189f, 1.083f, 1.113f, -0.585f, -0.30f, 1 },     /* armazon */
+            { 0.152f, 0.188f, 0.96f, 1.015f, -0.395f, -0.30f, 1 },      /* empunadura inferior */
+            { 0.158f, 0.182f, 1.05f, 1.062f, -0.54f, -0.41f, 1 },       /* guardamonte: base */
+            { 0.158f, 0.182f, 1.05f, 1.083f, -0.54f, -0.517f, 1 },      /* guardamonte: frente */
+            { 0.147f, 0.193f, 0.945f, 0.96f, -0.40f, -0.285f, 0 } };    /* base del cargador */
+        float lx0 = camX - wx, lz0 = camZ - wz;
+        int nbx = (lx0 * lx0 + lz0 * lz0 > 22.0f * 22.0f) ? 3 : 7;
+        for (int bi = 0; bi < nbx; bi++) {
             const float *bb = bxs[bi]; float c[8][3];
             for (int i = 0; i < 8; i++) { float lp[3] = { (i & 1) ? bb[1] : bb[0], (i & 2) ? bb[3] : bb[2], (i & 4) ? bb[5] : bb[4] }; m34Xf(&G[BN_WEAP], lp, c[i]); }
             float cxm = 0, cym = 0, czm = 0; for (int i = 0; i < 8; i++) { cxm += c[i][0] / 8; cym += c[i][1] / 8; czm += c[i][2] / 8; }
@@ -2040,7 +2449,7 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
                 if (nx * ex + ny * ey + nz * ez <= 0) continue;
                 float dist = sqrtf(ex * ex + ey * ey + ez * ez), shade = clampf(0.62f + 0.38f * (nx * -0.35f + ny * 0.8f + nz * 0.45f), 0.45f, 1.05f);
                 V v[4];
-                for (int k = 0; k < 4; k++) { const float *pt = c[FACE[fcs][k]]; toView(pt[0], pt[1], pt[2], &v[k].x, &v[k].y, &v[k].z); fogColor(RGBA(38, 40, 44, 255), shade, dist, &v[k].r, &v[k].g, &v[k].b); }
+                for (int k = 0; k < 4; k++) { const float *pt = c[FACE[fcs][k]]; toView(pt[0], pt[1], pt[2], &v[k].x, &v[k].y, &v[k].z); fogColor(bb[6] > 0.5f ? RGBA(30, 31, 34, 255) : RGBA(48, 50, 55, 255), shade, dist, &v[k].r, &v[k].g, &v[k].b); }
                 emitPoly(v, 4, 0);
             }
         }
@@ -2081,6 +2490,13 @@ static void updateRigs(float dt) {
 static void drawBots(void) {
     for (int i = 0; i < nbots; i++) {
         const Bot *b = &bots[i];
+#ifdef PS2_ONLINE
+        if (rds[i].on) {      /* cadaver con ragdoll: ligeramente enrojecido segun la herida */
+            const Ragdoll *rd = &rds[i]; float tn = 1.0f - 0.28f * rd->wound;
+            rigOverG = rd->G; drawRig(botModel(i), &b->rg, 0.0f, -1.0f, 1, rd->p[RP_HIP][0], rd->p[RP_HIP][1], rd->p[RP_HIP][2], b->yaw, 1.0f, tn, tn, 0); rigOverG = NULL;
+            continue;
+        }
+#endif
         drawRig(botModel(i), &b->rg, b->rg.dead ? 0.0f : b->pitch, b->rl ? clampf(b->rlT / 1.7f, 0, 1) : -1.0f, 1, b->x, b->py, b->z, b->yaw, 1, 1, 1, 0);
     }
 }
@@ -2261,7 +2677,7 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
     float pitch = d->tilt[0] * k + kick * 0.7f, yaw = d->tilt[1] * k + 0.05f - swap * 0.4f, roll = d->tilt[2] * k - swap * 0.5f;
 #ifdef PS2_ONLINE
     /* apuntando: el arma pasa al centro y la mira queda a la altura del ojo; corriendo: arma baja y ladeada */
-    static const float ADSP[4][3] = { { 0, -0.122f, 0.46f }, { 0, -0.152f, 0.50f }, { 0, -0.148f, 0.50f }, { 0, -0.182f, 0.52f } };
+    static const float ADSP[4][3] = { { 0, -0.134f, 0.46f }, { 0, -0.200f, 0.50f }, { 0, -0.178f, 0.50f }, { 0, -0.212f, 0.52f } };   /* y mas bajo: el arma ya no tapa el centro de la pantalla */
     float ad = bfAds, sa = bfSprA; bobx *= 1 - 0.85f * ad; boby *= 1 - 0.85f * ad;
     yaw = yaw * (1 - ad) + 0.0f * ad + 0.32f * sa; pitch = pitch * (1 - 0.6f * ad) + (-0.30f) * sa; roll = roll * (1 - ad) + 0.25f * sa;
 #endif
@@ -2278,16 +2694,24 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
     int magSeated = !reloading || u < 0.16f || u >= 0.76f, magOnHand = reloading && ((u >= 0.16f && u < 0.42f) || (u >= 0.5f && u < 0.76f));
     float pumpZ = 0.33f;
     if (w == 0) {          /* ---- pistola ---- */
-        wbox(0, 0.03f, 0.07f, 0.022f, 0.026f, 0.14f, GM);                       /* corredera */
-        for (int i = 0; i < 5; i++) wbox(0.0225f, 0.03f, -0.045f + i * 0.012f, 0.0015f, 0.02f, 0.003f, GD);   /* estrias */
-        wbox(0.0225f, 0.036f, 0.07f, 0.0015f, 0.012f, 0.03f, RGBA(12, 12, 14, 255));        /* ventana de expulsion */
-        wbox(0, 0.064f, -0.05f, 0.016f, 0.007f, 0.007f, GD); wbox(0, 0.063f, 0.195f, 0.004f, 0.007f, 0.005f, GD);   /* miras */
-        wbox(0, 0.024f, 0.215f, 0.011f, 0.011f, 0.014f, GD);                    /* boca */
-        wbox(0, -0.002f, 0.04f, 0.02f, 0.018f, 0.11f, GD);                      /* armazon */
-        wbox(0, -0.022f, 0.11f, 0.012f, 0.005f, 0.04f, GL);                     /* riel inferior */
-        wbox(0, -0.04f, -0.03f, 0.021f, 0.03f, 0.028f, GD); wbox(0, -0.085f, -0.04f, 0.022f, 0.03f, 0.029f, GD);   /* empunadura */
-        wbox(0, -0.032f, 0.05f, 0.004f, 0.004f, 0.035f, GM); wbox(0, -0.018f, 0.032f, 0.0035f, 0.012f, 0.004f, GL);   /* guardamonte y gatillo */
-        if (magSeated) wbox(0, -0.122f, -0.042f, 0.023f, 0.008f, 0.03f, GM);
+        /* HK VP70Z: corredera alta y cuadrada, armazon de polimero, guardamonte grande y empunadura ancha (22 cajas, unas 5 mas que la anterior; son cajas planas sin texturas) */
+        wbox(0, 0.033f, 0.0425f, 0.0225f, 0.023f, 0.1525f, GM);                 /* corredera */
+        wbox(0, 0.036f, 0.2075f, 0.0195f, 0.020f, 0.0125f, GM);                 /* nariz de la corredera (mas angosta) */
+        wbox(0, 0.032f, 0.2205f, 0.007f, 0.007f, 0.0015f, RGBA(10, 10, 12, 255));   /* boca del canon */
+        for (int i = 0; i < 5; i++) wbox(0.0229f, 0.033f, -0.098f + i * 0.011f, 0.0012f, 0.017f, 0.0022f, GD);   /* estrias traseras */
+        wbox(0.0228f, 0.041f, 0.10f, 0.001f, 0.005f, 0.04f, RGBA(68, 70, 75, 255));         /* grabado "HECKLER & KOCH" */
+        wbox(0.0228f, 0.036f, 0.03f, 0.001f, 0.011f, 0.024f, RGBA(12, 12, 14, 255));        /* ventana de expulsion */
+        wbox(0, 0.0635f, -0.098f, 0.008f, 0.007f, 0.006f, GD);                  /* mira trasera */
+        wbox(0, 0.063f, 0.205f, 0.0035f, 0.007f, 0.005f, GD);                   /* mira delantera */
+        wbox(0, -0.0015f, 0.0375f, 0.0215f, 0.0135f, 0.1425f, GD);              /* armazon de polimero */
+        wbox(0, -0.030f, 0.1275f, 0.0125f, 0.018f, 0.0075f, GD);                /* guardamonte: frente */
+        wbox(0, -0.043f, 0.066f, 0.0125f, 0.005f, 0.069f, GD);                  /* guardamonte: base */
+        wbox(0, -0.026f, 0.095f, 0.004f, 0.016f, 0.003f, GL);                   /* gatillo */
+        wbox(0.0218f, -0.034f, 0.04f, 0.0012f, 0.007f, 0.007f, GL);             /* boton del seguro del cargador */
+        wbox(0, -0.045f, -0.055f, 0.0215f, 0.033f, 0.052f, GD);                 /* empunadura superior */
+        wbox(0, -0.099f, -0.060f, 0.0205f, 0.021f, 0.046f, GD);                 /* empunadura inferior (mas inclinada) */
+        wbox(0.0245f, -0.002f, 0.06f, 0.004f, 0.007f, 0.028f, RGBA(52, 54, 58, 255));   /* indice apoyado sobre el armazon */
+        if (magSeated) { wbox(0, -0.1265f, -0.062f, 0.0225f, 0.0065f, 0.05f, GM); wbox(0, -0.1305f, -0.118f, 0.0235f, 0.003f, 0.014f, GM); }   /* base del cargador con su pestana trasera */
     } else if (w == 1) {   /* ---- fusil ---- */
         wbox(0, -0.012f, 0.00f, 0.027f, 0.036f, 0.115f, GM);
         wbox(0, 0.030f, 0.02f, 0.029f, 0.027f, 0.14f, GD);
@@ -2307,10 +2731,10 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
         wbox(0, 0.02f, 0.665f, 0.017f, 0.017f, 0.028f, RGBA(18, 19, 22, 255));
         for (int i = 0; i < 3; i++) wbox(0, 0.02f, 0.65f + i * 0.02f, 0.0185f, 0.0185f, 0.004f, GD);
         wbox(0, 0.070f, 0.10f, 0.027f, 0.011f, 0.04f, GD);
-        wbox(0, 0.108f, 0.10f, 0.031f, 0.031f, 0.035f, GM);
-        wbox(0, 0.108f, 0.0645f, 0.026f, 0.026f, 0.002f, RGBA(22, 44, 70, 255));
+        /* mira de punto rojo hueca: solo el marco, sin cristal ni caja solida, para ver a traves */
+        wbox(0, 0.136f, 0.10f, 0.031f, 0.004f, 0.035f, GM); wbox(0, 0.080f, 0.10f, 0.031f, 0.004f, 0.035f, GM);
+        wbox(-0.027f, 0.108f, 0.10f, 0.004f, 0.028f, 0.035f, GM); wbox(0.027f, 0.108f, 0.10f, 0.004f, 0.028f, 0.035f, GM);
         wbox(0, 0.115f, 0.0615f, 0.0035f, 0.0035f, 0.001f, RGBA(255, 70, 50, 255));
-        wbox(0, 0.108f, 0.136f, 0.026f, 0.026f, 0.002f, RGBA(24, 50, 80, 255));
         wbox(0, 0.142f, 0.10f, 0.02f, 0.006f, 0.03f, GD);
         wbox(0, -0.06f, -0.07f, 0.021f, 0.03f, 0.021f, GD); wbox(0, -0.095f, -0.082f, 0.022f, 0.03f, 0.023f, GD); wbox(0, -0.125f, -0.09f, 0.024f, 0.006f, 0.025f, GM);
         wbox(0, -0.052f, 0.045f, 0.004f, 0.006f, 0.05f, GM); wbox(0, -0.04f, -0.005f, 0.0035f, 0.014f, 0.004f, GL);
@@ -2383,7 +2807,7 @@ static void drawCross(void) {
         float spd = sqrtf(P.vx * P.vx + P.vz * P.vz);
         float sprd = W[wsel].spread * (1 + clampf(spd / 5, 0, 1) * 2.2f + (P.ground ? 0 : 3)) * (1 - 0.6f * bfAds) * (1 + bfBloom);
         gap = fminf(3 * t + sprd * camF, 34 * t); len = 5 * t;
-        if (bfAds > 0.6f) { gfx_rect(cx - 1.5f * t, cy - 1.5f * t, cx + 1.5f * t, cy + 1.5f * t, c); goto bf_hit; }
+        if (bfAds > 0.6f) { gfx_rect(cx - 2.6f * t, cy - 2.6f * t, cx + 2.6f * t, cy + 2.6f * t, RGBA(0, 0, 0, 150)); gfx_rect(cx - 1.5f * t, cy - 1.5f * t, cx + 1.5f * t, cy + 1.5f * t, c); goto bf_hit; }
     }
 #endif
     gfx_rect(cx - gap - len, cy - th, cx - gap, cy + th, c); gfx_rect(cx + gap, cy - th, cx + gap + len, cy + th, c);
@@ -2625,8 +3049,27 @@ void game_init(void) {
     snd_music(1);
 }
 
+/* ---------- Contador de FPS (R3 lo muestra/oculta) ---------- */
+static float fpsRawDt = 1.0f / 60.0f;       /* tiempo real del ultimo cuadro, sin recortar: lo escribe main() */
+static float fpsShow = 60, fpsMs = 16.7f, fpsAcc; static int fpsFrames, fpsOn = 1;
+static void fpsTick(void) {
+    fpsAcc += fpsRawDt; fpsFrames++;
+    if (fpsAcc >= 0.5f) { fpsShow = fpsFrames / fpsAcc; fpsMs = 1000.0f * fpsAcc / fpsFrames; fpsAcc = 0; fpsFrames = 0; }
+}
+static void fpsDraw(void) {
+    if (!fpsOn) return;
+    float t = SH / 224.0f, sc = t * 0.9f; char a[16], b[16];
+    snprintf(a, 16, "%d FPS", (int)(fpsShow + 0.5f)); snprintf(b, 16, "%d.%d MS", (int)fpsMs, (int)(fpsMs * 10) % 10);
+    float w = textW(a, sc) > textW(b, sc * 0.75f) ? textW(a, sc) : textW(b, sc * 0.75f), x1 = SW - 4 * t, x0 = x1 - w - 6 * t, y0 = 3 * t;
+    u32c col = fpsShow >= 50 ? RGBA(111, 207, 151, 255) : (fpsShow >= 30 ? RGBA(224, 168, 58, 255) : RGBA(229, 72, 77, 255));
+    gfx_rect(x0, y0, x1, y0 + 8 * sc + 8 * sc * 0.75f + 5 * t, RGBA(0, 0, 0, 140));
+    drawText(x1 - 3 * t - textW(a, sc) + sc * 0.5f * 0, y0 + 2 * t, sc, a, col);
+    drawText(x1 - 3 * t - textW(b, sc * 0.75f), y0 + 3 * t + 8 * sc, sc * 0.75f, b, RGBA(143, 160, 166, 255));
+}
 void game_frame(const Pad *pd, float dt) {
     float t = SH / 224.0f;
+    if (pd->pressed & B_R3) fpsOn = !fpsOn;
+    fpsTick();
     #ifdef PC_ONLINE
     { int f; if (pc_video_poll(&f)) { vidCur.full = vidNew.full = f; cfgSave(); } }
     mpPump(dt);
@@ -2655,7 +3098,7 @@ void game_frame(const Pad *pd, float dt) {
         updateWeapon(gp, dt, canAct);
         updateBots(dt, canAct);
 #ifdef PS2_ONLINE
-        bfUpdateNades(dt); bfUpdateFx(dt);
+        bfUpdateNades(dt); bfUpdateFx(dt); goreUpdate(dt);
         for (int i = 0; i < 4; i++) if (bfDT[i] > 0) bfDT[i] -= dt;
         for (int i = 0; i < nbots; i++) {      /* radar tactico: solo se ven los enemigos que tienes a la vista o que acaban de disparar */
             if (bfSpot[i] > 0) bfSpot[i] -= dt;
@@ -2965,6 +3408,7 @@ void game_frame(const Pad *pd, float dt) {
     }
     if (mpNoticeT > 0 && mode != M_PLAYING) drawTextC(SW * 0.5f, SH * 0.86f, t * 0.9f, mpNotice, RGBA(224, 128, 58, 255));
 #endif
+    fpsDraw();
     gfx_end();
 }
 
@@ -3114,7 +3558,7 @@ void pad_poll(Pad *p) {
     if (m & PAD_SQUARE) d |= B_SQUARE; if (m & PAD_TRIANGLE) d |= B_TRIANGLE;
     if (m & PAD_L1) d |= B_L1;       if (m & PAD_R1) d |= B_R1;
     if (m & PAD_L2) d |= B_L2;       if (m & PAD_R2) d |= B_R2;
-    if (m & PAD_START) d |= B_START; if (m & PAD_SELECT) d |= B_SELECT; if (m & PAD_L3) d |= B_L3;
+    if (m & PAD_START) d |= B_START; if (m & PAD_SELECT) d |= B_SELECT; if (m & PAD_L3) d |= B_L3; if (m & PAD_R3) d |= B_R3;
     p->down = d; p->pressed = d & ~prevDown; prevDown = d;
     if (b.mode >> 4 == 0x7) { /* modo analogico */
         p->lx = axis(b.ljoy_h); p->ly = axis(b.ljoy_v);
@@ -3180,6 +3624,14 @@ static void init_iop(void) {
     sbv_patch_disable_prefix_check();
 }
 
+/* Reloj: registro Count del procesador (EE, 294,912 MHz) */
+#define EE_CPU_HZ 294912000.0f
+static inline unsigned cpu_count(void) {
+    unsigned c;
+    __asm__ volatile("mfc0 %0, $9" : "=r"(c));
+    return c;
+}
+
 int main(void) {
     init_scr();
     scr_printf("PUNTO CERO para PS2 - arrancando\n\n  Reiniciando el IOP ...");
@@ -3190,10 +3642,18 @@ int main(void) {
     scr_printf("  Iniciando video ...\n");
     gfx_init();
     game_init();
+    unsigned last = cpu_count();
     for (;;) {
         Pad p;
         pad_poll(&p);
-        game_frame(&p, 1.0f / 60.0f);
+        /* tiempo real del cuadro anterior: si los fps bajan a 30 el juego sigue a la misma velocidad */
+        unsigned now = cpu_count();
+        float dt = (float)(unsigned)(now - last) / EE_CPU_HZ;
+        last = now;
+        fpsRawDt = dt > 0.0005f ? dt : 0.0005f;      /* para el contador de FPS (sin recortar) */
+        if (dt < 0.005f) dt = 0.005f;
+        if (dt > 0.05f) dt = 0.05f;      /* tope: evita saltos enormes si hay una pausa larga (carga, etc.) */
+        game_frame(&p, dt);
         audio_pump();
     }
     return 0;
