@@ -2374,6 +2374,73 @@ static void botPart(const Bot *b, float lx, float ly, float lz, float hw, float 
     obox(b->x + lx * co + lz * s, ly, b->z - lx * s + lz * co, hw, hh, hd, b->yaw, c);
 }
 /* Dibuja un soldado con piel por vertice. weap: 0 pistola (oculta el fusil y dibuja una pistola), 2 escopeta (madera), otros fusil. */
+/* ---------- Personajes voxel (reemplazan a los modelos generados: model_soldado_tactico, etc.) ----------
+ * Cada personaje es un conjunto de cajas rigidas, una por hueso del esqueleto (piel de un solo hueso, sin mezcla).
+ * 25 cajas -> 200 vertices y 131 caras (las bases ocultas no se generan), con culling por cara. Los tres skins comparten
+ * la geometria y solo cambian la paleta. Se arma una vez en game_init() y el esqueleto/ragdoll no cambian. */
+enum { VC_HELM, VC_FACE, VC_EYE, VC_UNI, VC_SLV, VC_VEST, VC_PACK, VC_PADS, VC_BOOT, VC_GLOVE, VC_GUN, VC_GUN2, VC_N };
+typedef struct { signed char bone; float x0, x1, y0, y1, z0, z1; unsigned char col, part, bottom; } VoxBox;   /* part 5 = arma; bottom: se dibuja la cara de abajo */
+static const VoxBox VOXB[] = {
+    { BN_PELVIS, -.21f, .21f, .70f, .86f, -.12f, .12f, VC_UNI, 0, 1 },                 /* cadera */
+    { BN_CHEST, -.22f, .22f, .86f, 1.30f, -.13f, .13f, VC_UNI, 0, 0 },                 /* torso */
+    { BN_CHEST, -.19f, .19f, .98f, 1.27f, -.17f, -.13f, VC_VEST, 0, 0 },               /* chaleco */
+    { BN_CHEST, -.15f, .15f, .95f, 1.26f, .13f, .29f, VC_PACK, 0, 0 },                 /* mochila */
+    { BN_HEAD, -.135f, .135f, 1.32f, 1.58f, -.14f, .13f, VC_FACE, 0, 1 },              /* cara */
+    { BN_HEAD, -.10f, .10f, 1.47f, 1.51f, -.15f, -.14f, VC_EYE, 0, 0 },                /* sombra de los ojos */
+    { BN_HEAD, -.18f, .18f, 1.52f, 1.76f, -.17f, .18f, VC_HELM, 0, 0 },                /* casco */
+    { BN_ARMS, .21f, .35f, 1.14f, 1.30f, -.12f, .02f, VC_SLV, 0, 0 },                  /* hombro derecho */
+    { BN_ARMS, .21f, .33f, 1.05f, 1.19f, -.42f, -.04f, VC_SLV, 0, 0 },                 /* brazo derecho */
+    { BN_ARMS, .12f, .23f, 1.03f, 1.13f, -.46f, -.34f, VC_GLOVE, 0, 0 },               /* mano derecha (empunadura) */
+    { BN_ARMS, -.36f, -.22f, .96f, 1.30f, -.12f, .02f, VC_SLV, 0, 0 },                 /* brazo izquierdo */
+    { BN_FORE_L, -.34f, -.20f, .95f, 1.09f, -.50f, -.04f, VC_SLV, 0, 0 },              /* antebrazo izquierdo (1) */
+    { BN_FORE_L, -.20f, .00f, .96f, 1.08f, -.64f, -.48f, VC_SLV, 0, 0 },               /* antebrazo izquierdo (2) */
+    { BN_FORE_L, .00f, .15f, .97f, 1.09f, -.72f, -.52f, VC_GLOVE, 0, 0 },              /* mano izquierda (guardamano) */
+    { BN_THIGH_L, -.29f, -.09f, .47f, .78f, -.10f, .10f, VC_UNI, 0, 1 },
+    { BN_THIGH_R, .09f, .29f, .47f, .78f, -.10f, .10f, VC_UNI, 0, 1 },
+    { BN_SHIN_L, -.28f, -.10f, .22f, .47f, -.09f, .09f, VC_UNI, 0, 0 },
+    { BN_SHIN_R, .10f, .28f, .22f, .47f, -.09f, .09f, VC_UNI, 0, 0 },
+    { BN_SHIN_L, -.26f, -.12f, .38f, .52f, -.12f, -.09f, VC_PADS, 0, 0 },              /* rodilleras */
+    { BN_SHIN_R, .12f, .26f, .38f, .52f, -.12f, -.09f, VC_PADS, 0, 0 },
+    { BN_FOOT_L, -.28f, -.10f, .00f, .22f, -.21f, .10f, VC_BOOT, 0, 1 },
+    { BN_FOOT_R, .10f, .28f, .00f, .22f, -.21f, .10f, VC_BOOT, 0, 1 },
+    { BN_WEAP, .145f, .195f, 1.10f, 1.17f, -.70f, -.30f, VC_GUN, 5, 0 },               /* fusil: cuerpo */
+    { BN_WEAP, .152f, .188f, 1.115f, 1.155f, -1.08f, -.70f, VC_GUN2, 5, 0 },           /* fusil: guardamano y canon */
+    { BN_WEAP, .155f, .185f, 1.02f, 1.10f, -.60f, -.52f, VC_GUN2, 5, 0 }               /* fusil: cargador */
+};
+#define VOX_NB ((int)(sizeof VOXB / sizeof VOXB[0]))
+static const unsigned char VOX_PAL[3][VC_N][3] = {
+    /* 0 soldado:       casco          cara           ojos          uniforme       mangas         chaleco        mochila        rodilleras    botas           guantes        fusil          fusil2 */
+    { { 112, 124, 62 }, { 222, 178, 134 }, { 46, 34, 30 }, { 88, 100, 58 }, { 118, 128, 66 }, { 178, 150, 86 }, { 96, 80, 60 }, { 50, 58, 36 }, { 128, 82, 44 }, { 222, 178, 134 }, { 84, 88, 96 }, { 52, 54, 60 } },
+    /* 1 superviviente */
+    { { 88, 62, 42 }, { 222, 178, 134 }, { 46, 34, 30 }, { 66, 88, 124 }, { 160, 64, 52 }, { 130, 118, 104 }, { 176, 126, 52 }, { 48, 66, 96 }, { 62, 52, 46 }, { 222, 178, 134 }, { 84, 88, 96 }, { 52, 54, 60 } },
+    /* 2 zombi */
+    { { 38, 42, 34 }, { 116, 156, 102 }, { 210, 44, 34 }, { 86, 82, 72 }, { 100, 92, 80 }, { 120, 64, 58 }, { 64, 60, 54 }, { 70, 66, 58 }, { 52, 48, 42 }, { 116, 156, 102 }, { 84, 88, 96 }, { 52, 54, 60 } }
+};
+static Model voxM[3];
+static float vxV[3][VOX_NB * 24];
+static unsigned short vxF[3][VOX_NB * 24];
+static unsigned char vxC[3][VOX_NB * 18], vxP[3][VOX_NB * 6], vxB[3][VOX_NB * 24];
+static void voxBuild(void) {
+    for (int k = 0; k < 3; k++) {
+        int nv = 0, nf = 0;
+        for (int b = 0; b < VOX_NB; b++) {
+            const VoxBox *x = &VOXB[b]; int base = nv;
+            for (int i = 0; i < 8; i++, nv++) {
+                vxV[k][nv * 3] = (i & 1) ? x->x1 : x->x0; vxV[k][nv * 3 + 1] = (i & 2) ? x->y1 : x->y0; vxV[k][nv * 3 + 2] = (i & 4) ? x->z1 : x->z0;
+                vxB[k][nv * 3] = vxB[k][nv * 3 + 1] = (unsigned char)x->bone; vxB[k][nv * 3 + 2] = 255;
+            }
+            for (int f = 0; f < 6; f++) {
+                if (f == 2 && !x->bottom) continue;                         /* cara -y oculta: no se genera */
+                /* drawRig espera el orden inverso al de FACE para que la normal salga hacia afuera */
+                vxF[k][nf * 4] = (unsigned short)(base + FACE[f][0]); vxF[k][nf * 4 + 1] = (unsigned short)(base + FACE[f][3]);
+                vxF[k][nf * 4 + 2] = (unsigned short)(base + FACE[f][2]); vxF[k][nf * 4 + 3] = (unsigned short)(base + FACE[f][1]);
+                for (int j = 0; j < 3; j++) vxC[k][nf * 3 + j] = VOX_PAL[k][x->col][j];
+                vxP[k][nf] = x->part; nf++;
+            }
+        }
+        voxM[k].nv = nv; voxM[k].nf = nf; voxM[k].v = vxV[k]; voxM[k].f = vxF[k]; voxM[k].c = vxC[k]; voxM[k].p = vxP[k]; voxM[k].vb = vxB[k];
+    }
+}
 static const M34 *rigOverG = NULL;      /* si no es NULL, drawRig usa estas matrices de hueso (ragdoll) en vez de la animacion */
 static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, int weap, float wx, float wy, float wz, float yaw, float tr, float tg, float tb, float flash) {
     if (!sphereVis(wx, wy + 0.9f, wz, 1.8f)) return;     /* fuera de la vista: no se transforma */
@@ -2460,9 +2527,9 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
     }
 }
 static const Model *botModel(int i) {
-    if (bots[i].remote) return &model_soldado_tactico;
+    if (bots[i].remote) return &voxM[0];
     int k = S.skin < 3 ? S.skin : i % 3;
-    return k == 0 ? &model_soldado_tactico : k == 1 ? &model_superviviente : &model_zombi_comun;
+    return &voxM[k];
 }
 
 /* Alimenta el esqueleto de cada soldado con su movimiento real (velocidad medida) y sus estados. */
@@ -2528,7 +2595,7 @@ static float charAnim(const Pad *pd, float dt) {
 }
 static void drawPlayerChar(void) {
     float ru = wReload > 0 ? clampf(1 - wReload / W[wsel].reload, 0, 1) : -1.0f;
-    drawRig(&model_soldado_tactico, &pRig, P.pitch, ru, wsel, P.x, P.y, P.z, P.yaw + dbgYaw, 0.85f, 1.0f, 1.3f, wFlash);
+    drawRig(&voxM[0], &pRig, P.pitch, ru, wsel, P.x, P.y, P.z, P.yaw + dbgYaw, 0.85f, 1.0f, 1.3f, wFlash);
 }
 /* Piernas y botas del jugador: aparecen al mirar hacia abajo. */
 static void drawPlayerLegs(void) {
@@ -3042,6 +3109,7 @@ static void vidApply(void) {
 #endif
 void game_init(void) {
     srand(12345);
+    voxBuild();
     buildWorld();
 #ifdef PC_ONLINE
     cfgLoad(); curMap = S.map; buildWorld(); vidNew = vidCur; pc_video_apply(RES_W[vidCur.res], RES_H[vidCur.res], vidCur.full); pc_set_brightness(vidCur.bright);
