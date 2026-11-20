@@ -2423,8 +2423,18 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
         emitPoly(v, 4, 0);
     }
     if (weap == 0 && !g->dead) {       /* pistola: corredera y empunadura, sujetas por el hueso del arma */
-        static const float bxs[2][6] = { { 0.145f, 0.195f, 1.09f, 1.17f, -0.62f, -0.30f }, { 0.152f, 0.188f, 0.98f, 1.09f, -0.36f, -0.30f } };
-        for (int bi = 0; bi < 2; bi++) {
+        /* HK VP70Z: x0, x1, y0, y1, z0, z1, tipo (0 = metal, 1 = polimero). Las 3 primeras cajas bastan de lejos (nivel de detalle). */
+        static const float bxs[7][7] = {
+            { 0.147f, 0.193f, 1.113f, 1.173f, -0.62f, -0.30f, 0 },      /* corredera */
+            { 0.151f, 0.189f, 1.015f, 1.083f, -0.416f, -0.30f, 1 },     /* empunadura superior */
+            { 0.151f, 0.189f, 1.083f, 1.113f, -0.585f, -0.30f, 1 },     /* armazon */
+            { 0.152f, 0.188f, 0.96f, 1.015f, -0.395f, -0.30f, 1 },      /* empunadura inferior */
+            { 0.158f, 0.182f, 1.05f, 1.062f, -0.54f, -0.41f, 1 },       /* guardamonte: base */
+            { 0.158f, 0.182f, 1.05f, 1.083f, -0.54f, -0.517f, 1 },      /* guardamonte: frente */
+            { 0.147f, 0.193f, 0.945f, 0.96f, -0.40f, -0.285f, 0 } };    /* base del cargador */
+        float lx0 = camX - wx, lz0 = camZ - wz;
+        int nbx = (lx0 * lx0 + lz0 * lz0 > 22.0f * 22.0f) ? 3 : 7;
+        for (int bi = 0; bi < nbx; bi++) {
             const float *bb = bxs[bi]; float c[8][3];
             for (int i = 0; i < 8; i++) { float lp[3] = { (i & 1) ? bb[1] : bb[0], (i & 2) ? bb[3] : bb[2], (i & 4) ? bb[5] : bb[4] }; m34Xf(&G[BN_WEAP], lp, c[i]); }
             float cxm = 0, cym = 0, czm = 0; for (int i = 0; i < 8; i++) { cxm += c[i][0] / 8; cym += c[i][1] / 8; czm += c[i][2] / 8; }
@@ -2439,7 +2449,7 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
                 if (nx * ex + ny * ey + nz * ez <= 0) continue;
                 float dist = sqrtf(ex * ex + ey * ey + ez * ez), shade = clampf(0.62f + 0.38f * (nx * -0.35f + ny * 0.8f + nz * 0.45f), 0.45f, 1.05f);
                 V v[4];
-                for (int k = 0; k < 4; k++) { const float *pt = c[FACE[fcs][k]]; toView(pt[0], pt[1], pt[2], &v[k].x, &v[k].y, &v[k].z); fogColor(RGBA(38, 40, 44, 255), shade, dist, &v[k].r, &v[k].g, &v[k].b); }
+                for (int k = 0; k < 4; k++) { const float *pt = c[FACE[fcs][k]]; toView(pt[0], pt[1], pt[2], &v[k].x, &v[k].y, &v[k].z); fogColor(bb[6] > 0.5f ? RGBA(30, 31, 34, 255) : RGBA(48, 50, 55, 255), shade, dist, &v[k].r, &v[k].g, &v[k].b); }
                 emitPoly(v, 4, 0);
             }
         }
@@ -2684,16 +2694,24 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
     int magSeated = !reloading || u < 0.16f || u >= 0.76f, magOnHand = reloading && ((u >= 0.16f && u < 0.42f) || (u >= 0.5f && u < 0.76f));
     float pumpZ = 0.33f;
     if (w == 0) {          /* ---- pistola ---- */
-        wbox(0, 0.03f, 0.07f, 0.022f, 0.026f, 0.14f, GM);                       /* corredera */
-        for (int i = 0; i < 5; i++) wbox(0.0225f, 0.03f, -0.045f + i * 0.012f, 0.0015f, 0.02f, 0.003f, GD);   /* estrias */
-        wbox(0.0225f, 0.036f, 0.07f, 0.0015f, 0.012f, 0.03f, RGBA(12, 12, 14, 255));        /* ventana de expulsion */
-        wbox(0, 0.064f, -0.05f, 0.016f, 0.007f, 0.007f, GD); wbox(0, 0.063f, 0.195f, 0.004f, 0.007f, 0.005f, GD);   /* miras */
-        wbox(0, 0.024f, 0.215f, 0.011f, 0.011f, 0.014f, GD);                    /* boca */
-        wbox(0, -0.002f, 0.04f, 0.02f, 0.018f, 0.11f, GD);                      /* armazon */
-        wbox(0, -0.022f, 0.11f, 0.012f, 0.005f, 0.04f, GL);                     /* riel inferior */
-        wbox(0, -0.04f, -0.03f, 0.021f, 0.03f, 0.028f, GD); wbox(0, -0.085f, -0.04f, 0.022f, 0.03f, 0.029f, GD);   /* empunadura */
-        wbox(0, -0.032f, 0.05f, 0.004f, 0.004f, 0.035f, GM); wbox(0, -0.018f, 0.032f, 0.0035f, 0.012f, 0.004f, GL);   /* guardamonte y gatillo */
-        if (magSeated) wbox(0, -0.122f, -0.042f, 0.023f, 0.008f, 0.03f, GM);
+        /* HK VP70Z: corredera alta y cuadrada, armazon de polimero, guardamonte grande y empunadura ancha (22 cajas, unas 5 mas que la anterior; son cajas planas sin texturas) */
+        wbox(0, 0.033f, 0.0425f, 0.0225f, 0.023f, 0.1525f, GM);                 /* corredera */
+        wbox(0, 0.036f, 0.2075f, 0.0195f, 0.020f, 0.0125f, GM);                 /* nariz de la corredera (mas angosta) */
+        wbox(0, 0.032f, 0.2205f, 0.007f, 0.007f, 0.0015f, RGBA(10, 10, 12, 255));   /* boca del canon */
+        for (int i = 0; i < 5; i++) wbox(0.0229f, 0.033f, -0.098f + i * 0.011f, 0.0012f, 0.017f, 0.0022f, GD);   /* estrias traseras */
+        wbox(0.0228f, 0.041f, 0.10f, 0.001f, 0.005f, 0.04f, RGBA(68, 70, 75, 255));         /* grabado "HECKLER & KOCH" */
+        wbox(0.0228f, 0.036f, 0.03f, 0.001f, 0.011f, 0.024f, RGBA(12, 12, 14, 255));        /* ventana de expulsion */
+        wbox(0, 0.0635f, -0.098f, 0.008f, 0.007f, 0.006f, GD);                  /* mira trasera */
+        wbox(0, 0.063f, 0.205f, 0.0035f, 0.007f, 0.005f, GD);                   /* mira delantera */
+        wbox(0, -0.0015f, 0.0375f, 0.0215f, 0.0135f, 0.1425f, GD);              /* armazon de polimero */
+        wbox(0, -0.030f, 0.1275f, 0.0125f, 0.018f, 0.0075f, GD);                /* guardamonte: frente */
+        wbox(0, -0.043f, 0.066f, 0.0125f, 0.005f, 0.069f, GD);                  /* guardamonte: base */
+        wbox(0, -0.026f, 0.095f, 0.004f, 0.016f, 0.003f, GL);                   /* gatillo */
+        wbox(0.0218f, -0.034f, 0.04f, 0.0012f, 0.007f, 0.007f, GL);             /* boton del seguro del cargador */
+        wbox(0, -0.045f, -0.055f, 0.0215f, 0.033f, 0.052f, GD);                 /* empunadura superior */
+        wbox(0, -0.099f, -0.060f, 0.0205f, 0.021f, 0.046f, GD);                 /* empunadura inferior (mas inclinada) */
+        wbox(0.0245f, -0.002f, 0.06f, 0.004f, 0.007f, 0.028f, RGBA(52, 54, 58, 255));   /* indice apoyado sobre el armazon */
+        if (magSeated) { wbox(0, -0.1265f, -0.062f, 0.0225f, 0.0065f, 0.05f, GM); wbox(0, -0.1305f, -0.118f, 0.0235f, 0.003f, 0.014f, GM); }   /* base del cargador con su pestana trasera */
     } else if (w == 1) {   /* ---- fusil ---- */
         wbox(0, -0.012f, 0.00f, 0.027f, 0.036f, 0.115f, GM);
         wbox(0, 0.030f, 0.02f, 0.029f, 0.027f, 0.14f, GD);
