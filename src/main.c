@@ -2697,8 +2697,10 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
         /* HK VP70Z: corredera alta y cuadrada, armazon de polimero, guardamonte grande y empunadura ancha (22 cajas, unas 5 mas que la anterior; son cajas planas sin texturas) */
         wbox(0, 0.033f, 0.0425f, 0.0225f, 0.023f, 0.1525f, GM);                 /* corredera */
         wbox(0, 0.036f, 0.2075f, 0.0195f, 0.020f, 0.0125f, GM);                 /* nariz de la corredera (mas angosta) */
+        wbox(0, 0.030f, -0.0745f, 0.0238f, 0.020f, 0.0305f, GL);                /* bloque trasero elevado donde van las estrias (rasgo de la VP70Z) */
+        wbox(0, 0.012f, 0.215f, 0.0185f, 0.004f, 0.0075f, GD);                  /* bisel inferior de la boca */
         wbox(0, 0.032f, 0.2205f, 0.007f, 0.007f, 0.0015f, RGBA(10, 10, 12, 255));   /* boca del canon */
-        for (int i = 0; i < 5; i++) wbox(0.0229f, 0.033f, -0.098f + i * 0.011f, 0.0012f, 0.017f, 0.0022f, GD);   /* estrias traseras */
+        for (int i = 0; i < 5; i++) wbox(0.0242f, 0.030f, -0.098f + i * 0.011f, 0.0012f, 0.017f, 0.0022f, GD);   /* estrias traseras (sobre el bloque elevado) */
         wbox(0.0228f, 0.041f, 0.10f, 0.001f, 0.005f, 0.04f, RGBA(68, 70, 75, 255));         /* grabado "HECKLER & KOCH" */
         wbox(0.0228f, 0.036f, 0.03f, 0.001f, 0.011f, 0.024f, RGBA(12, 12, 14, 255));        /* ventana de expulsion */
         wbox(0, 0.0635f, -0.098f, 0.008f, 0.007f, 0.006f, GD);                  /* mira trasera */
