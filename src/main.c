@@ -5353,13 +5353,17 @@ typedef struct { float x, y, z, r, g, b; } V;
 static float camX, camY, camZ, camYaw, camPitch, camF;
 
 static float camRoll = 0, camFovAdd = 0;
+static float tvYaw = 1e9f, tvPitch = 1e9f, tvRoll = 1e9f, tvCY, tvSY, tvCP, tvSP, tvCR = 1, tvSR;      /* seno/coseno de la camara en cache: solo se recalculan si la camara giro */
 static void toView(float wx, float wy, float wz, float *x, float *y, float *z) {
+    if (camYaw != tvYaw || camPitch != tvPitch || camRoll != tvRoll) {
+        tvYaw = camYaw; tvPitch = camPitch; tvRoll = camRoll;
+        tvCY = cosf(camYaw); tvSY = sinf(camYaw); tvCP = cosf(camPitch); tvSP = sinf(camPitch); tvCR = cosf(camRoll); tvSR = sinf(camRoll);
+    }
     float dx = wx - camX, dy = wy - camY, dz = wz - camZ;
-    float cy = cosf(camYaw), sy = sinf(camYaw), cp = cosf(camPitch), sp = sinf(camPitch);
-    float xr = dx * cy - dz * sy;
-    float zh = -dx * sy - dz * cy;
-    *x = xr; *z = zh * cp + dy * sp; *y = -zh * sp + dy * cp;
-    if (camRoll != 0) { float cr = cosf(camRoll), sr = sinf(camRoll), tx = *x * cr - *y * sr; *y = *x * sr + *y * cr; *x = tx; }
+    float xr = dx * tvCY - dz * tvSY;
+    float zh = -dx * tvSY - dz * tvCY;
+    *x = xr; *z = zh * tvCP + dy * tvSP; *y = -zh * tvSP + dy * tvCP;
+    if (camRoll != 0) { float tx = *x * tvCR - *y * tvSR; *y = *x * tvSR + *y * tvCR; *x = tx; }
 }
 
 #define NEAR 0.12f
@@ -5371,6 +5375,61 @@ static int sphereVis(float wx, float wy, float wz, float r) {
     if (x - lx * z > r * sqrtf(1 + lx * lx) || -x - lx * z > r * sqrtf(1 + lx * lx)) return 0;
     if (y - ly * z > r * sqrtf(1 + ly * ly) || -y - ly * z > r * sqrtf(1 + ly * ly)) return 0;
     return 1;
+}
+
+/* ---------- Occlusion culling ----------
+ * Cada cuadro se "rasteriza" a muy baja resolucion (32x24 celdas) la parte delantera de las paredes y cajas del mapa: por cada celda se guarda
+ * la profundidad maxima de la pared mas cercana que la cubre ENTERA. Despues, cualquier objeto (caja, baldosa de suelo, soldado, cadaver) cuya
+ * caja de pantalla cae dentro de celdas cubiertas por paredes mas cercanas que el, ni se transforma ni se dibuja. Es conservador:
+ * ante la duda se dibuja. */
+#define OC_W 32
+#define OC_H 24
+static float ocFar[OC_H][OC_W]; static int ocOn, ocCulled, ocCulledShow;
+static int ocProject(float wx, float wy, float wz, float *sx, float *sy, float *sz) {
+    float x, y, z; toView(wx, wy, wz, &x, &y, &z); if (z < NEAR) return 0;
+    float iz = 1.0f / z; *sx = SW * 0.5f + x * iz * camF; *sy = SH * 0.5f - y * iz * camF; *sz = z; return 1;
+}
+static void ocFace(float ax, float az, float bx, float bz, float top) {      /* pared vertical entre (ax,az) y (bx,bz), de 0 a top */
+    float x, y, za, zb; toView(ax, 0, az, &x, &y, &za); toView(bx, 0, bz, &x, &y, &zb);
+    const float zn = 0.35f;
+    if (za < zn && zb < zn) return;
+    if (za < zn) { float t = (zn - za) / (zb - za); ax += (bx - ax) * t; az += (bz - az) * t; }      /* recorta al plano cercano (solo acorta la pared: sigue siendo conservador) */
+    else if (zb < zn) { float t = (zn - zb) / (za - zb); bx += (ax - bx) * t; bz += (az - bz) * t; }
+    float p[4][3];
+    if (!ocProject(ax, 0, az, &p[0][0], &p[0][1], &p[0][2]) || !ocProject(bx, 0, bz, &p[1][0], &p[1][1], &p[1][2]) ||
+        !ocProject(ax, top, az, &p[2][0], &p[2][1], &p[2][2]) || !ocProject(bx, top, bz, &p[3][0], &p[3][1], &p[3][2])) return;
+    int l = p[0][0] <= p[1][0] ? 0 : 1, r = 1 - l;
+    /* rectangulo inscrito en el cuadrilatero proyectado (siempre queda dentro de la pared) */
+    float xl = fmaxf(p[l][0], p[l + 2][0]), xr = fminf(p[r][0], p[r + 2][0]), yt = fmaxf(p[l + 2][1], p[r + 2][1]), yb = fminf(p[l][1], p[r][1]);
+    if (xl >= xr || yt >= yb) return;
+    float zf = fmaxf(fmaxf(p[0][2], p[1][2]), fmaxf(p[2][2], p[3][2])), cw = SW / (float)OC_W, ch = SH / (float)OC_H;
+    int c0 = (int)ceilf(xl / cw), c1 = (int)floorf(xr / cw) - 1, r0 = (int)ceilf(yt / ch), r1 = (int)floorf(yb / ch) - 1;
+    if (c0 < 0) c0 = 0; if (r0 < 0) r0 = 0; if (c1 > OC_W - 1) c1 = OC_W - 1; if (r1 > OC_H - 1) r1 = OC_H - 1;
+    for (int j = r0; j <= r1; j++) for (int i = c0; i <= c1; i++) if (zf < ocFar[j][i]) ocFar[j][i] = zf;
+}
+static void occBuild(void) {
+    for (int j = 0; j < OC_H; j++) for (int i = 0; i < OC_W; i++) ocFar[j][i] = 1e30f;
+    ocCulledShow = ocCulled; ocCulled = 0; ocOn = 1;
+    for (int k = 0; k < nbox; k++) {
+        const Box *b = &boxes[k]; if (b->top < 0.6f) continue;
+        if (camZ < b->z0) ocFace(b->x0, b->z0, b->x1, b->z0, b->top); else if (camZ > b->z1) ocFace(b->x0, b->z1, b->x1, b->z1, b->top);
+        if (camX < b->x0) ocFace(b->x0, b->z0, b->x0, b->z1, b->top); else if (camX > b->x1) ocFace(b->x1, b->z0, b->x1, b->z1, b->top);
+    }
+}
+/* 1 si la caja alineada a los ejes queda entera detras de paredes (no hace falta transformarla ni dibujarla) */
+static int ocHidden(float x0, float y0, float z0, float x1, float y1, float z1) {
+    if (!ocOn) return 0;
+    float mnx = 1e30f, mxx = -1e30f, mny = 1e30f, mxy = -1e30f, mnz = 1e30f;
+    for (int i = 0; i < 8; i++) {
+        float sx, sy, sz; if (!ocProject((i & 1) ? x1 : x0, (i & 2) ? y1 : y0, (i & 4) ? z1 : z0, &sx, &sy, &sz)) return 0;
+        if (sx < mnx) mnx = sx; if (sx > mxx) mxx = sx; if (sy < mny) mny = sy; if (sy > mxy) mxy = sy; if (sz < mnz) mnz = sz;
+    }
+    float cw = SW / (float)OC_W, ch = SH / (float)OC_H;
+    int c0 = (int)floorf(mnx / cw), c1 = (int)floorf(mxx / cw), r0 = (int)floorf(mny / ch), r1 = (int)floorf(mxy / ch);
+    if (c1 < 0 || r1 < 0 || c0 >= OC_W || r0 >= OC_H) return 0;       /* fuera de pantalla: ya lo descarta el recorte */
+    if (c0 < 0) c0 = 0; if (r0 < 0) r0 = 0; if (c1 > OC_W - 1) c1 = OC_W - 1; if (r1 > OC_H - 1) r1 = OC_H - 1;
+    for (int j = r0; j <= r1; j++) for (int i = c0; i <= c1; i++) if (!(ocFar[j][i] < mnz)) return 0;
+    ocCulled++; return 1;
 }
 static void emitPoly(V *in, int n, int overlay) {
     V out[12]; int m = 0;
@@ -5494,6 +5553,7 @@ static void drawFloor(void) {
     for (int i = 0; i < 12; i++) for (int j = 0; j < 12; j++) {
         float x0 = -HALF + i * 5, z0 = -HALF + j * 5;
         if (!sphereVis(x0 + 2.5f, 0, z0 + 2.5f, 3.6f)) continue;
+        if (ocHidden(x0, 0, z0, x0 + 5, 0, z0 + 5)) continue;
         float mx = x0 + 2.5f - camX, mz = z0 + 2.5f - camZ;
         float dist = sqrtf(mx * mx + mz * mz);
         u32c base = ((i + j) & 1) ? MAPS[curMap].floorB : MAPS[curMap].floorA;
@@ -5581,7 +5641,8 @@ static int bfNadeSt; static float bfNadeU, bfThrowT;      /* granada: 0 guardada
 #define PLATE_STOCK 3       /* placas que llevas en la mochila al empezar cada ronda */
 #define PLATE_ROLL -0.45f   /* inclinacion de la placa en la mano (si se ve girada al reves, cambia el signo) */
 #define PLATE_SND_U 0.74f   /* a este punto de la animacion suena la placa entrando en el chaleco (el golpe del sonido cae a ~0,9) */
-static float bfArmor, bfPlateU, bfPlateCloseT; static int bfPlateSt, bfPlates = PLATE_STOCK, bfSprintTog, bfPlateChain, bfPlateSnd;   /* chain: placas puestas en esta tanda; snd: ya sono la entrada de esta placa */
+static float bfArmor, bfPlateU, bfPlateCloseT; static int bfPlateMore;      /* 1 = tras esta placa viene otra (L2 mantenido): la mano izquierda sigue sujetando el chaleco abierto */
+static int bfPlateSt, bfPlates = PLATE_STOCK, bfSprintTog, bfPlateChain, bfPlateSnd;   /* chain: placas puestas en esta tanda; snd: ya sono la entrada de esta placa */
 typedef struct { float x, y, z, vx, vy, vz, t; int on; } Nade;
 typedef struct { float x, y, z, t; } Boom;
 static Nade nades[4]; static Boom booms[4];
@@ -6849,6 +6910,7 @@ static void updateWeapon(const Pad *pd, float dt, int canAct) {
     /* Placa de armadura: L2 pone una placa (si sigues apretando L2 pone la siguiente). Disparar, apuntar, recargar, granada o cambiar de arma la cancela. */
     if (bfPlateCloseT > 0) { bfPlateCloseT -= dt; if (bfPlateCloseT <= 0) snd_play(SND_PLATE_CLOSE, 0.9f); }      /* cierre del chaleco: un poco despues de la ultima placa, sin pisar su sonido */
     if (bfPlateSt && (pd->pressed & (B_R1 | B_L1 | B_SQUARE | B_R2 | B_TRIANGLE | B_LEFT | B_RIGHT))) { bfPlateSt = 0; bfPlateU = 0; }
+    bfPlateMore = bfPlateSt && (pd->down & B_L2) && bfPlates > 1 && bfArmor + PLATE_HP < PLATE_HP * PLATE_N - 0.01f;
     if (!bfPlateSt) {
         if ((pd->pressed & B_L2) && bfPlates > 0 && bfArmor < PLATE_HP * PLATE_N - 0.01f && !bfNadePend && !bfSprint && wReload <= 0 && wSwap <= 0) { bfPlateSt = 1; bfPlateU = 0; bfPlateChain = 0; bfPlateSnd = 0; bfPlateCloseT = 0; snd_play(SND_PLATING, 0.9f); }      /* abrir el chaleco: solo al empezar la tanda */
     } else {
@@ -7124,12 +7186,12 @@ static void vpDrawRig(const M34 *wm) {
     for (int t = 0; t < VPL_NT; t++) {
         const float *a = tv[VPL_T[t * 3]], *b = tv[VPL_T[t * 3 + 1]], *c = tv[VPL_T[t * 3 + 2]];
         float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
-        float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, nl = sqrtf(nx * nx + ny * ny + nz * nz);
-        if (nl < 1e-9f) continue;
-        nl = sg / nl; nx *= nl; ny *= nl; nz *= nl;                                   /* normal hacia afuera */
+        float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, nl = nx * nx + ny * ny + nz * nz;
+        if (nl < 1e-18f) continue;
         float fx = (a[0] + b[0] + c[0]) * (1.0f / 3), fy = (a[1] + b[1] + c[1]) * (1.0f / 3), fz = (a[2] + b[2] + c[2]) * (1.0f / 3);
         float ex = camX - fx, ey = camY - fy, ez = camZ - fz;
-        if (nx * ex + ny * ey + nz * ez <= 0) continue;
+        if (sg * (nx * ex + ny * ey + nz * ez) <= 0) continue;                        /* de espaldas: fuera, sin normalizar */
+        nl = sg / sqrtf(nl); nx *= nl; ny *= nl; nz *= nl;                            /* normal hacia afuera */
         float dist = sqrtf(ex * ex + ey * ey + ez * ez), shade = clampf(0.62f + 0.38f * (nx * -0.35f + ny * 0.8f + nz * 0.45f), 0.45f, 1.05f);
         V v[3]; const float *pp[3] = { a, b, c };
         for (int k = 0; k < 3; k++) { toView(pp[k][0], pp[k][1], pp[k][2], &v[k].x, &v[k].y, &v[k].z); fogColor(pal[VPL_C[t]], shade, dist, &v[k].r, &v[k].g, &v[k].b); }
@@ -7167,10 +7229,10 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
         const float *a = tv[qd[0]], *b = tv[qd[1]], *c2 = tv[qd[2]];
         float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c2[0] - a[0], vy = c2[1] - a[1], vz = c2[2] - a[2];
         float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-        float nl = sqrtf(nx * nx + ny * ny + nz * nz); if (nl < 1e-8f) continue;
-        nx = -nx / nl; ny = -ny / nl; nz = -nz / nl;
+        float nn = nx * nx + ny * ny + nz * nz; if (nn < 1e-16f) continue;
         float ex = camX - (a[0] + c2[0]) * 0.5f, ey = camY - (a[1] + c2[1]) * 0.5f, ez = camZ - (a[2] + c2[2]) * 0.5f;
-        if (nx * ex + ny * ey + nz * ez <= 0) continue;
+        if (nx * ex + ny * ey + nz * ez >= 0) continue;                         /* cara de espaldas: fuera, sin normalizar */
+        { float il = -1.0f / sqrtf(nn); nx *= il; ny *= il; nz *= il; }
         float dist = sqrtf(ex * ex + ey * ey + ez * ez);
         float shade = clampf(0.62f + 0.38f * (nx * -0.35f + ny * 0.8f + nz * 0.45f), 0.45f, 1.05f) * 1.3f;
         float cr = m->c[f * 3], cg = m->c[f * 3 + 1], cb = m->c[f * 3 + 2];
@@ -7251,12 +7313,16 @@ static void drawBots(void) {
         const Bot *b = &bots[i];
         if (b->unused) continue;
 #ifdef PS2_ONLINE
-        if (rds[i].on) {      /* cadaver con ragdoll: ligeramente enrojecido segun la herida */
+        if (rds[i].on) {
+            { const Ragdoll *q = &rds[i]; float mn[3] = { 1e9f, 1e9f, 1e9f }, mx[3] = { -1e9f, -1e9f, -1e9f };
+              for (int k = 0; k < RD_NP; k++) for (int e = 0; e < 3; e++) { if (q->p[k][e] < mn[e]) mn[e] = q->p[k][e]; if (q->p[k][e] > mx[e]) mx[e] = q->p[k][e]; }
+              if (ocHidden(mn[0] - 0.4f, mn[1] - 0.2f, mn[2] - 0.4f, mx[0] + 0.4f, mx[1] + 0.4f, mx[2] + 0.4f)) continue; }      /* cadaver con ragdoll: ligeramente enrojecido segun la herida */
             const Ragdoll *rd = &rds[i]; float tn = 1.0f - 0.28f * rd->wound;
             rigOverG = rd->G; drawRig(botModel(i), &b->rg, 0.0f, -1.0f, 1, rd->p[RP_HIP][0], rd->p[RP_HIP][1], rd->p[RP_HIP][2], b->yaw, 1.0f, tn, tn, 0); rigOverG = NULL;
             continue;
         }
 #endif
+        if (ocHidden(b->x - 0.7f, b->py, b->z - 0.7f, b->x + 0.7f, b->py + 2.0f, b->z + 0.7f)) continue;
         drawRig(botModel(i), &b->rg, b->rg.dead ? 0.0f : b->pitch, b->rl ? clampf(b->rlT / 1.7f, 0, 1) : -1.0f, 1, b->x, b->py, b->z, b->yaw, 1, 1, 1, 0);
     }
 }
@@ -7414,10 +7480,10 @@ static void vpDrawVM(int withMag) {
     for (int t = 0; t < nt; t++) {
         const float *a = pv[VPM_T[t * 3]], *b = pv[VPM_T[t * 3 + 1]], *c = pv[VPM_T[t * 3 + 2]];
         float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
-        float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, nl = sqrtf(nx * nx + ny * ny + nz * nz);
-        if (nl < 1e-12f) continue;
-        nx /= nl; ny /= nl; nz /= nl;
-        if (nx * a[0] + ny * a[1] + nz * a[2] >= 0) continue;                    /* de espaldas a la camara (esta en el origen) */
+        float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, nl = nx * nx + ny * ny + nz * nz;
+        if (nl < 1e-24f) continue;
+        if (nx * a[0] + ny * a[1] + nz * a[2] >= 0) continue;                    /* de espaldas a la camara (esta en el origen): fuera, sin normalizar */
+        nl = 1.0f / sqrtf(nl); nx *= nl; ny *= nl; nz *= nl;
         float shade = clampf(0.7f + 0.3f * (ny * 0.8f - nx * 0.35f), 0.45f, 1.0f);
         u32c col = pal[VPM_C[t]]; V v[3]; const float *pp[3] = { a, b, c };
         for (int k = 0; k < 3; k++) { v[k].x = pp[k][0]; v[k].y = pp[k][1]; v[k].z = pp[k][2]; v[k].r = CR(col) * shade; v[k].g = CG(col) * shade; v[k].b = CB(col) * shade; }
@@ -7651,16 +7717,79 @@ static void plateHand(const float *p, int withPlate) {      /* mano derecha: aga
     wbox(0.010f, 0.024f, 0.012f, 0.030f, 0.004f, 0.020f, KNU);                                     /* nudillos */
     wbox(-0.034f, -0.070f, -0.030f, 0.011f, 0.020f, 0.008f, SKIN);                                 /* pulgar con yema de piel sobre la cara */
 }
-static void plateHandL(const float *p, float open) {      /* mano izquierda: abre la solapa del chaleco para que entre la placa; al principio solo asoma la punta por la esquina inferior izquierda */
-    u32c GLV = RGBA(34, 36, 40, 255), SK = RGBA(30, 32, 36, 255), SK2 = RGBA(24, 26, 30, 255), SKIN = RGBA(176, 128, 96, 255), FLAP = RGBA(46, 52, 62, 255);
+/* Interpolacion suave entre claves con `stride` columnas: K[i*stride] = instante 0..1 y el resto son los valores. */
+static void plateKeyN(const float *K, int stride, int n, float u, float *o) {
+    int m = stride - 1;
+    if (u <= K[0]) { for (int j = 0; j < m; j++) o[j] = K[1 + j]; return; }
+    for (int i = 1; i < n; i++) if (u <= K[i * stride]) {
+        const float *a = &K[(i - 1) * stride], *b = &K[i * stride]; float s2 = smooth((u - a[0]) / (b[0] - a[0]));
+        for (int j = 0; j < m; j++) o[j] = a[1 + j] + (b[1 + j] - a[1 + j]) * s2;
+        return;
+    }
+    for (int j = 0; j < m; j++) o[j] = K[(n - 1) * stride + 1 + j];
+}
+static void wdir(float x, float y, float z, float *o) { for (int j = 0; j < 3; j++) o[j] = WR[j][0] * x + WR[j][1] * y + WR[j][2] * z; }
+/* caja en el espacio de la mano con eje largo `al` y eje `up` (ambos unitarios y perpendiculares): hl medio largo, hw medio ancho (a lo largo de up), hh medio grosor */
+static void hbox(float x, float y, float z, const float *al, const float *up, float hl, float hw, float hh, u32c col) {
+    float c[3], a[3], u2[3], sd[3] = { al[1] * up[2] - al[2] * up[1], al[2] * up[0] - al[0] * up[2], al[0] * up[1] - al[1] * up[0] }, s3[3];
+    wpt(x, y, z, c); wdir(al[0], al[1], al[2], a); wdir(up[0], up[1], up[2], u2); wdir(sd[0], sd[1], sd[2], s3);
+    gbox(c, a, u2, s3, hl, hw, hh, col);
+}
+/* un dedo articulado: falange de guante y yema de piel (guante sin dedos). a1/a2 = flexion (rad) hacia la palma (+z); phi = abanico en el plano de la mano */
+static void plateFinger(float bx, float by, float bz, float phi, float a1, float a2, float l1, float l2, float hw, u32c gl, u32c sk) {
+    float cp = cosf(phi), sp = sinf(phi), up[3] = { -sp, cp, 0 };
+    float d1[3] = { cosf(a1) * cp, cosf(a1) * sp, sinf(a1) }, d2[3] = { cosf(a2) * cp, cosf(a2) * sp, sinf(a2) };
+    float e1[3] = { bx + d1[0] * l1, by + d1[1] * l1, bz + d1[2] * l1 };
+    hbox(bx + d1[0] * l1 * 0.5f, by + d1[1] * l1 * 0.5f, bz + d1[2] * l1 * 0.5f, d1, up, l1 * 0.5f, hw, hw * 0.92f, gl);
+    hbox(e1[0] + d2[0] * l2 * 0.5f, e1[1] + d2[1] * l2 * 0.5f, e1[2] + d2[2] * l2 * 0.5f, d2, up, l2 * 0.5f, hw * 0.93f, hw * 0.84f, sk);
+}
+/* Mano izquierda (guante tactico sin dedos): dorso con proteccion en los nudillos, munequera, 4 dedos y pulgar articulados.
+ * curl 0 = abierta, 1 = cerrada sobre la solapa; thumb 0 = pulgar recto, 1 = pulgar haciendo pinza. */
+static void plateHandL(const float *p, float curl, float thumb) {
+    u32c GLV = RGBA(36, 38, 42, 255), GLV2 = RGBA(28, 30, 34, 255), KNU = RGBA(78, 80, 86, 255), STRAP = RGBA(58, 60, 64, 255), SK = RGBA(30, 32, 36, 255), SK2 = RGBA(24, 26, 30, 255), SKIN = RGBA(176, 128, 96, 255);
     float a0[3];
-    nadeSpace(p, p[3], p[4], p[5]); wpt(0.0f, -0.030f, -0.045f, a0);
-    { const float anc[3] = { -0.90f, -1.20f, 0.12f }; limb(anc, a0, 0.040f, SK, SK2); }
-    wbox(0.0f, 0.0f, -0.020f, 0.022f, 0.030f, 0.012f, GLV); wbox(0.022f, 0.010f, -0.004f, 0.010f, 0.007f, 0.018f, GLV); wbox(0.022f, -0.010f, -0.004f, 0.010f, 0.007f, 0.018f, GLV);
-    wbox(0.034f, 0.010f, -0.004f, 0.005f, 0.006f, 0.015f, SKIN);                                   /* yema del dedo (piel) */
-    if (open > 0.01f) {                                                                            /* solapa abierta: interior oscuro detras de la placa, labio y borde por delante */
-        wbox(0.105f, -0.085f, -0.012f, 0.100f * open, 0.026f, 0.004f, FLAP);
-        wbox(-0.015f, -0.020f, -0.012f, 0.012f * open, 0.070f, 0.004f, FLAP);
+    nadeSpace(p, p[3], p[4], p[5]); wpt(-0.046f, 0.0f, -0.004f, a0);
+    { const float anc[3] = { -0.75f, -0.60f, 0.16f }; limb(anc, a0, 0.031f, SK, SK2); }               /* antebrazo: entra por la esquina inferior izquierda */
+    wbox(-0.052f, 0.0f, -0.002f, 0.011f, 0.034f, 0.016f, GLV2);                                         /* puno de la manga */
+    wbox(-0.030f, 0.0f, -0.0135f, 0.006f, 0.032f, 0.004f, STRAP); wbox(-0.017f, 0.0f, -0.0125f, 0.0025f, 0.030f, 0.003f, KNU);   /* munequera con velcro */
+    wbox(0.002f, 0.0f, -0.004f, 0.033f, 0.031f, 0.0105f, GLV);                                          /* dorso de la mano */
+    wbox(0.026f, 0.0f, -0.0155f, 0.0085f, 0.027f, 0.0035f, KNU);                                        /* proteccion de nudillos */
+    wbox(0.0f, 0.0f, -0.0150f, 0.020f, 0.0015f, 0.002f, GLV2); wbox(0.0f, 0.012f, -0.0150f, 0.020f, 0.0015f, 0.002f, GLV2); wbox(0.0f, -0.012f, -0.0150f, 0.020f, 0.0015f, 0.002f, GLV2);   /* costuras */
+    static const float BY[4] = { 0.0225f, 0.0075f, -0.0075f, -0.0225f }, L1[4] = { 0.030f, 0.034f, 0.031f, 0.025f }, L2[4] = { 0.024f, 0.027f, 0.025f, 0.020f };
+    for (int i = 0; i < 4; i++) {
+        float a1 = curl * (1.10f + 0.06f * i), a2 = a1 + curl * 0.95f, phi = (i - 1.5f) * 0.07f * (1 - curl);
+        plateFinger(0.034f, BY[i], -0.002f, phi, a1, a2, L1[i], L2[i], 0.0068f, GLV, SKIN);
+    }
+    {   /* pulgar (parte de abajo de la mano): dos falanges que giran hacia los dedos al hacer la pinza */
+        float psi1 = -0.70f + thumb * 0.80f, psi2 = psi1 + thumb * 0.45f, b1 = 0.22f + thumb * 0.55f, b2 = b1 + thumb * 0.45f, up1[3] = { -sinf(psi1), cosf(psi1), 0 }, up2[3] = { -sinf(psi2), cosf(psi2), 0 };
+        float d1[3] = { cosf(b1) * cosf(psi1), cosf(b1) * sinf(psi1), sinf(b1) }, d2[3] = { cosf(b2) * cosf(psi2), cosf(b2) * sinf(psi2), sinf(b2) };
+        float bx = 0.008f, by = -0.030f, bz = 0.000f, l1 = 0.030f, l2 = 0.025f, e1[3] = { bx + d1[0] * l1, by + d1[1] * l1, bz + d1[2] * l1 };
+        hbox(bx + d1[0] * l1 * 0.5f, by + d1[1] * l1 * 0.5f, bz + d1[2] * l1 * 0.5f, d1, up1, l1 * 0.5f, 0.0085f, 0.0078f, GLV);
+        hbox(e1[0] + d2[0] * l2 * 0.5f, e1[1] + d2[1] * l2 * 0.5f, e1[2] + d2[2] * l2 * 0.5f, d2, up2, l2 * 0.5f, 0.0080f, 0.0072f, SKIN);
+    }
+}
+/* punto donde la mano izquierda pellizca la solapa (en la vista) */
+static void plateGripL(const float *p, float *g) { nadeSpace(p, p[3], p[4], p[5]); wpt(0.060f, -0.010f, 0.012f, g); }
+/* Chaleco (lo que se ve de el abajo de la pantalla): panel con tiras MOLLE, bolsillo de la placa y solapa con velcro. open 0 = cerrado, 1 = solapa levantada por la mano izquierda. */
+static void plateVest(const float *g, float open, float rise) {
+    u32c FAB = RGBA(40, 45, 40, 255), FAB2 = RGBA(54, 60, 52, 255), WEB = RGBA(27, 30, 27, 255), INS = RGBA(8, 9, 11, 255), VEL = RGBA(84, 86, 80, 255), FLAP = RGBA(48, 54, 47, 255);
+    if (rise <= 0.001f) return;
+    float dy = -(1 - rise) * 0.14f;
+    vbox(-0.010f, -0.190f + dy, 0.268f, 0.34f, 0.092f, 0.006f, FAB);
+    vbox(-0.010f, -0.0985f + dy, 0.2635f, 0.34f, 0.0025f, 0.0075f, FAB2);                               /* borde superior */
+    for (int i = 0; i < 3; i++) vbox(-0.010f, -0.127f - i * 0.022f + dy, 0.2615f, 0.33f, 0.0035f, 0.0015f, WEB);     /* tiras MOLLE */
+    if (open > 0.01f) {                                                                                  /* bolsillo abierto: interior oscuro */
+        vbox(-0.010f, -0.1075f - 0.013f * open + dy, 0.2625f, 0.130f, 0.013f * open + 0.002f, 0.002f, INS);
+    }
+    {   /* solapa: bisagra a la derecha del bolsillo, la punta sube hasta los dedos de la mano izquierda */
+        float H[3] = { 0.105f, -0.114f + dy, 0.257f }, T0[3] = { -0.115f, -0.116f + dy, 0.257f }, T[3], d[3], c[3], L;
+        for (int j = 0; j < 3; j++) T[j] = T0[j] + (g[j] - T0[j]) * open;
+        for (int j = 0; j < 3; j++) d[j] = T[j] - H[j]; L = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]); if (L < 1e-4f) return;
+        for (int j = 0; j < 3; j++) { d[j] /= L; c[j] = (T[j] + H[j]) * 0.5f; }
+        float ay[3] = { -d[1], d[0], 0 }, al = sqrtf(ay[0] * ay[0] + ay[1] * ay[1]); if (al < 1e-4f) return; ay[0] /= al; ay[1] /= al;
+        float az[3] = { d[1] * ay[2] - d[2] * ay[1], d[2] * ay[0] - d[0] * ay[2], d[0] * ay[1] - d[1] * ay[0] };
+        gbox(c, d, ay, az, L * 0.5f, 0.026f, 0.004f, FLAP);
+        { float ct[3] = { T[0] - d[0] * 0.014f, T[1] - d[1] * 0.014f, T[2] - d[2] * 0.014f - 0.003f }; gbox(ct, d, ay, az, 0.010f, 0.019f, 0.003f, VEL); }      /* parche de velcro en la punta */
     }
 }
 static void drawPlateVM(void) {
@@ -7676,18 +7805,46 @@ static void drawPlateVM(void) {
         { 0.85f, 0.050f, -0.115f, 0.360f, 0.20f, -0.60f, -0.15f }, { 0.90f, 0.060f, -0.170f, 0.380f, 0.20f, -0.75f, -0.10f },
         { 0.94f, 0.080f, -0.215f, 0.390f, 0.20f, -0.85f, -0.05f }, { 0.98f, 0.200f, -0.450f, 0.340f, 0.30f, -0.80f, 0.20f },
         { 1.00f, 0.600f, -0.800f, 0.300f, 0.30f, -0.50f, 0.40f } };
-    static const float KL[][7] = {      /* mano izquierda */
-        { 0.00f, -0.450f, -0.600f, 0.280f, 0.20f, -0.20f, 0.10f }, { 0.10f, -0.340f, -0.140f, 0.280f, 0.20f, -0.20f, 0.10f },
-        { 0.25f, -0.270f, -0.100f, 0.280f, 0.20f, -0.20f, 0.10f }, { 0.33f, -0.300f, -0.140f, 0.280f, 0.20f, -0.20f, 0.15f },
-        { 0.45f, -0.270f, -0.100f, 0.280f, 0.20f, -0.20f, 0.10f }, { 0.76f, -0.270f, -0.110f, 0.280f, 0.20f, -0.20f, 0.10f },
-        { 0.84f, -0.140f, -0.100f, 0.220f, 0.20f, -0.30f, 0.05f }, { 0.95f, -0.140f, -0.100f, 0.220f, 0.20f, -0.30f, 0.05f },
-        { 1.00f, -0.450f, -0.600f, 0.280f, 0.20f, -0.20f, 0.10f } };
-    float u = bfPlateU, R[6], L[6];
-    plateKey(KR, 17, u, R); plateHand(R, u >= PLATE_IN && u < PLATE_OUT);
-    if (u >= 0.06f && u < 0.98f) {
-        float open = smooth((u - 0.78f) / 0.08f) * (1 - smooth((u - 0.95f) / 0.04f));
-        plateKey(KL, 9, u, L); plateHandL(L, open);
+    /* mano izquierda: { instante, x, y, z, giro, cabeceo, alabeo, cierre de dedos, pinza del pulgar, solapa abierta, chaleco visible }
+     * 0-0.10 entra por abajo a la izquierda y llega a la solapa con la mano abierta; 0.10-0.17 la agarra (dedos y pulgar en pinza);
+     * 0.17-0.28 tira hacia arriba y se abre el bolsillo; se retira (0.38-0.48) para dejar ver la placa que sube y se muestra;
+     * 0.72-0.82 vuelve a sujetar la solapa abierta, la abre mas (0.88) para que entre la placa y, si no hay otra placa,
+     * suelta, aplasta la solapa para cerrarla y se retira. Si hay otra placa (L2 mantenido) no suelta el chaleco. */
+    static const float KA[][11] = {     /* primera placa de la tanda, y le sigue otra */
+        { 0.00f, -0.300f, -0.260f, 0.270f, 0.30f, -0.20f, 0.20f, 0.10f, 0.10f, 0.0f, 0.00f }, { 0.10f, -0.115f, -0.100f, 0.285f, 0.25f, -0.25f, 0.12f, 0.00f, 0.00f, 0.0f, 1.00f },
+        { 0.17f, -0.095f, -0.092f, 0.285f, 0.25f, -0.25f, 0.10f, 0.85f, 0.90f, 0.0f, 1.00f }, { 0.28f, -0.125f, -0.060f, 0.286f, 0.25f, -0.25f, 0.13f, 0.85f, 0.90f, 1.0f, 1.00f },
+        { 0.38f, -0.128f, -0.062f, 0.286f, 0.25f, -0.25f, 0.13f, 0.85f, 0.90f, 1.0f, 1.00f }, { 0.45f, -0.210f, -0.150f, 0.280f, 0.28f, -0.22f, 0.16f, 0.85f, 0.90f, 1.0f, 0.50f },
+        { 0.48f, -0.300f, -0.260f, 0.270f, 0.30f, -0.20f, 0.20f, 0.10f, 0.10f, 1.0f, 0.00f }, { 0.72f, -0.300f, -0.260f, 0.270f, 0.30f, -0.20f, 0.20f, 0.10f, 0.10f, 1.0f, 0.00f },
+        { 0.82f, -0.130f, -0.058f, 0.287f, 0.25f, -0.25f, 0.14f, 0.60f, 0.70f, 1.0f, 1.00f }, { 0.88f, -0.145f, -0.050f, 0.290f, 0.25f, -0.27f, 0.16f, 0.88f, 0.92f, 1.0f, 1.00f },
+        { 1.00f, -0.145f, -0.050f, 0.290f, 0.25f, -0.27f, 0.16f, 0.88f, 0.92f, 1.0f, 1.00f } };
+    static const float KB[][11] = {     /* primera placa y ultima */
+        { 0.00f, -0.300f, -0.260f, 0.270f, 0.30f, -0.20f, 0.20f, 0.10f, 0.10f, 0.0f, 0.00f }, { 0.10f, -0.115f, -0.100f, 0.285f, 0.25f, -0.25f, 0.12f, 0.00f, 0.00f, 0.0f, 1.00f },
+        { 0.17f, -0.095f, -0.092f, 0.285f, 0.25f, -0.25f, 0.10f, 0.85f, 0.90f, 0.0f, 1.00f }, { 0.28f, -0.125f, -0.060f, 0.286f, 0.25f, -0.25f, 0.13f, 0.85f, 0.90f, 1.0f, 1.00f },
+        { 0.38f, -0.128f, -0.062f, 0.286f, 0.25f, -0.25f, 0.13f, 0.85f, 0.90f, 1.0f, 1.00f }, { 0.45f, -0.210f, -0.150f, 0.280f, 0.28f, -0.22f, 0.16f, 0.85f, 0.90f, 1.0f, 0.50f },
+        { 0.48f, -0.300f, -0.260f, 0.270f, 0.30f, -0.20f, 0.20f, 0.10f, 0.10f, 1.0f, 0.00f }, { 0.72f, -0.300f, -0.260f, 0.270f, 0.30f, -0.20f, 0.20f, 0.10f, 0.10f, 1.0f, 0.00f },
+        { 0.82f, -0.130f, -0.058f, 0.287f, 0.25f, -0.25f, 0.14f, 0.60f, 0.70f, 1.0f, 1.00f }, { 0.88f, -0.145f, -0.050f, 0.290f, 0.25f, -0.27f, 0.16f, 0.88f, 0.92f, 1.0f, 1.00f },
+        { 0.92f, -0.120f, -0.075f, 0.286f, 0.25f, -0.25f, 0.13f, 0.35f, 0.40f, 0.6f, 1.00f }, { 0.96f, -0.070f, -0.105f, 0.280f, 0.20f, -0.20f, 0.05f, 0.10f, 0.10f, 0.0f, 1.00f },
+        { 1.00f, -0.280f, -0.220f, 0.270f, 0.30f, -0.20f, 0.20f, 0.05f, 0.05f, 0.0f, 0.00f } };
+    static const float KC[][11] = {     /* placa encadenada (chaleco ya abierto), y le sigue otra */
+        { 0.00f, -0.125f, -0.060f, 0.286f, 0.25f, -0.25f, 0.13f, 0.85f, 0.90f, 1.0f, 1.00f }, { 0.30f, -0.128f, -0.062f, 0.286f, 0.25f, -0.25f, 0.13f, 0.85f, 0.90f, 1.0f, 1.00f },
+        { 0.45f, -0.210f, -0.150f, 0.280f, 0.28f, -0.22f, 0.16f, 0.85f, 0.90f, 1.0f, 0.50f }, { 0.48f, -0.300f, -0.260f, 0.270f, 0.30f, -0.20f, 0.20f, 0.10f, 0.10f, 1.0f, 0.00f },
+        { 0.72f, -0.300f, -0.260f, 0.270f, 0.30f, -0.20f, 0.20f, 0.10f, 0.10f, 1.0f, 0.00f }, { 0.82f, -0.130f, -0.058f, 0.287f, 0.25f, -0.25f, 0.14f, 0.60f, 0.70f, 1.0f, 1.00f },
+        { 0.88f, -0.145f, -0.050f, 0.290f, 0.25f, -0.27f, 0.16f, 0.88f, 0.92f, 1.0f, 1.00f }, { 1.00f, -0.145f, -0.050f, 0.290f, 0.25f, -0.27f, 0.16f, 0.88f, 0.92f, 1.0f, 1.00f } };
+    static const float KD[][11] = {     /* placa encadenada y ultima */
+        { 0.00f, -0.125f, -0.060f, 0.286f, 0.25f, -0.25f, 0.13f, 0.85f, 0.90f, 1.0f, 1.00f }, { 0.30f, -0.128f, -0.062f, 0.286f, 0.25f, -0.25f, 0.13f, 0.85f, 0.90f, 1.0f, 1.00f },
+        { 0.45f, -0.210f, -0.150f, 0.280f, 0.28f, -0.22f, 0.16f, 0.85f, 0.90f, 1.0f, 0.50f }, { 0.48f, -0.300f, -0.260f, 0.270f, 0.30f, -0.20f, 0.20f, 0.10f, 0.10f, 1.0f, 0.00f },
+        { 0.72f, -0.300f, -0.260f, 0.270f, 0.30f, -0.20f, 0.20f, 0.10f, 0.10f, 1.0f, 0.00f }, { 0.82f, -0.130f, -0.058f, 0.287f, 0.25f, -0.25f, 0.14f, 0.60f, 0.70f, 1.0f, 1.00f },
+        { 0.88f, -0.145f, -0.050f, 0.290f, 0.25f, -0.27f, 0.16f, 0.88f, 0.92f, 1.0f, 1.00f }, { 0.92f, -0.120f, -0.075f, 0.286f, 0.25f, -0.25f, 0.13f, 0.35f, 0.40f, 0.6f, 1.00f },
+        { 0.96f, -0.070f, -0.105f, 0.280f, 0.20f, -0.20f, 0.05f, 0.10f, 0.10f, 0.0f, 1.00f }, { 1.00f, -0.280f, -0.220f, 0.270f, 0.30f, -0.20f, 0.20f, 0.05f, 0.05f, 0.0f, 0.00f } };
+    float u = bfPlateU, R[6], L[10], g[3];
+    plateKey(KR, 17, u, R);
+    {   /* mano izquierda y chaleco (antes que la derecha: la placa entra por detras del panel) */
+        int first = bfPlateChain == 0, more = bfPlateMore, n = (first ? 8 : 5) + (more ? 3 : 5);
+        const float *K = first ? (more ? &KA[0][0] : &KB[0][0]) : (more ? &KC[0][0] : &KD[0][0]);
+        plateKeyN(K, 11, n, u, L);
+        plateGripL(L, g); plateVest(g, L[8], L[9]); plateHandL(L, L[6], L[7]);
     }
+    plateHand(R, u >= PLATE_IN && u < PLATE_OUT);
 }
 #endif
 static void drawWeaponModel(void) {
@@ -7989,12 +8146,13 @@ static void fpsTick(void) {
 static void fpsDraw(void) {
     if (!fpsOn) return;
     float t = SH / 224.0f, sc = t * 0.9f; char a[16], b[16];
-    snprintf(a, 16, "%d FPS", (int)(fpsShow + 0.5f)); snprintf(b, 16, "%d.%d MS", (int)fpsMs, (int)(fpsMs * 10) % 10);
+    char c[16]; snprintf(a, 16, "%d FPS", (int)(fpsShow + 0.5f)); snprintf(b, 16, "%d.%d MS", (int)fpsMs, (int)(fpsMs * 10) % 10); snprintf(c, 16, "OCL %d", ocCulledShow);
     float w = textW(a, sc) > textW(b, sc * 0.75f) ? textW(a, sc) : textW(b, sc * 0.75f), x1 = SW - 4 * t, x0 = x1 - w - 6 * t, y0 = 3 * t;
     u32c col = fpsShow >= 50 ? RGBA(111, 207, 151, 255) : (fpsShow >= 30 ? RGBA(224, 168, 58, 255) : RGBA(229, 72, 77, 255));
-    gfx_rect(x0, y0, x1, y0 + 8 * sc + 8 * sc * 0.75f + 5 * t, RGBA(0, 0, 0, 140));
+    gfx_rect(x0, y0, x1, y0 + 8 * sc + 16 * sc * 0.75f + 7 * t, RGBA(0, 0, 0, 140));
     drawText(x1 - 3 * t - textW(a, sc) + sc * 0.5f * 0, y0 + 2 * t, sc, a, col);
     drawText(x1 - 3 * t - textW(b, sc * 0.75f), y0 + 3 * t + 8 * sc, sc * 0.75f, b, RGBA(143, 160, 166, 255));
+    drawText(x1 - 3 * t - textW(c, sc * 0.75f), y0 + 4 * t + 8 * sc + 6 * sc * 0.75f, sc * 0.75f, c, RGBA(143, 160, 166, 255));
 }
 void game_frame(const Pad *pd, float dt) {
     float t = SH / 224.0f;
@@ -8261,9 +8419,11 @@ void game_frame(const Pad *pd, float dt) {
             gfx_tri(0, 0, 1, top, SW, 0, 1, top, 0, hy, 1, SKY); gfx_tri(SW, 0, 1, top, SW, hy, 1, SKY, 0, hy, 1, SKY); }
     }
 #endif
+    occBuild();
     drawFloor();
     for (int i = 0; i < nbox; i++) {
         Box *b = &boxes[i];
+        if (ocHidden(b->x0, 0, b->z0, b->x1, b->top, b->z1)) continue;
         obox((b->x0 + b->x1) * .5f, b->top * .5f, (b->z0 + b->z1) * .5f, (b->x1 - b->x0) * .5f, b->top * .5f, (b->z1 - b->z0) * .5f, 0, b->col);
     }
     drawBots();
