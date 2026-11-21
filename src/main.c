@@ -6983,12 +6983,13 @@ static void toView(float wx, float wy, float wz, float *x, float *y, float *z) {
 
 #define NEAR 0.12f
 /* Descarte por objeto: devuelve 0 si la esfera esta entera detras de la camara o fuera del campo de vision (no se transforma ni se dibuja). */
+static int frCulled, frCulledShow;      /* objetos descartados por el frustum en el cuadro (se muestra en el HUD como FRU) */
 static int sphereVis(float wx, float wy, float wz, float r) {
     float x, y, z; toView(wx, wy, wz, &x, &y, &z);
-    if (z + r < NEAR) return 0;
+    if (z + r < NEAR) { frCulled++; return 0; }
     float lx = (SW * 0.5f) / camF, ly = (SH * 0.5f) / camF;
-    if (x - lx * z > r * sqrtf(1 + lx * lx) || -x - lx * z > r * sqrtf(1 + lx * lx)) return 0;
-    if (y - ly * z > r * sqrtf(1 + ly * ly) || -y - ly * z > r * sqrtf(1 + ly * ly)) return 0;
+    if (x - lx * z > r * sqrtf(1 + lx * lx) || -x - lx * z > r * sqrtf(1 + lx * lx)) { frCulled++; return 0; }
+    if (y - ly * z > r * sqrtf(1 + ly * ly) || -y - ly * z > r * sqrtf(1 + ly * ly)) { frCulled++; return 0; }
     return 1;
 }
 
@@ -7024,7 +7025,7 @@ static void ocFace(float ax, float az, float bx, float bz, float top) {      /* 
 }
 static void occBuild(void) {
     for (int j = 0; j < OC_H; j++) for (int i = 0; i < OC_W; i++) ocFar[j][i] = 1e30f;
-    ocCulledShow = ocCulled; ocCulled = 0; ocOn = 1;
+    ocCulledShow = ocCulled; ocCulled = 0; ocOn = 1; frCulledShow = frCulled; frCulled = 0;
     for (int k = 0; k < nbox; k++) {
         const Box *b = &boxes[k]; if (b->top < 0.6f) continue;
         if (camZ < b->z0) ocFace(b->x0, b->z0, b->x1, b->z0, b->top); else if (camZ > b->z1) ocFace(b->x0, b->z1, b->x1, b->z1, b->top);
@@ -7046,6 +7047,16 @@ static int ocHidden(float x0, float y0, float z0, float x1, float y1, float z1) 
     for (int j = r0; j <= r1; j++) for (int i = c0; i <= c1; i++) if (!(ocFar[j][i] < mnz)) return 0;
     ocCulled++; return 1;
 }
+/* ---------- Descarte de efectos (sangre, charcos, humo, chispas, marcas, sombras) ----------
+ * Los objetos del mapa y los soldados ya se descartaban por frustum (sphereVis) y por oclusion (ocHidden); los efectos de pantalla no: cada uno se
+ * proyectaba y mandaba sus triangulos aunque cayera fuera de la imagen o detras de una pared. Ahora se descartan antes de construir el abanico.
+ * Ambas pruebas son conservadoras (ante la duda se dibuja) y las oclusiones suman en el contador OCL. FX_CULL 0 las desactiva para comparar. */
+#ifndef FX_CULL
+#define FX_CULL 1
+#endif
+static unsigned char botOcc[MAXBOT];      /* 1 si drawBots descarto al soldado por oclusion este cuadro (su sombra tambien se omite) */
+static int fxScreenOut(float sx, float sy, float rad) { return FX_CULL && (sx + rad < 0 || sx - rad > SW || sy + rad < 0 || sy - rad > SH); }
+static int fxHidden(float x, float y, float z, float r) { return FX_CULL && ocHidden(x - r, y - r, z - r, x + r, y + r, z + r); }
 static void emitPoly(V *in, int n, int overlay) {
     V out[12]; int m = 0;
     for (int i = 0; i < n; i++) {
@@ -7237,7 +7248,7 @@ static Player P;
 #define LAB_HINT "ARRIBA: SOLDADO   ABAJO: BORRAR"
 #define LAB_INGAME "EN JUEGO: ARRIBA = NUEVO SOLDADO   ABAJO = BORRAR TODOS"
 #endif
-static float bfLeanOffX, bfLeanOffZ, bfRest;      /* desplazamiento lateral al asomarte (mundo) y arma apoyada 0..1: se usan en camara, disparos y bots */
+static float bfLeanOffX, bfLeanOffZ, bfLeanDrop, bfRest;      /* desplazamiento lateral al asomarte (mundo) y arma apoyada 0..1: se usan en camara, disparos y bots */
 static Bot bots[MAXBOT];
 #ifdef PC_ONLINE
 static int netMode, mpShots, mpRounds = 5;           /* netMode: 0 sin red, 1 anfitrion, 2 cliente */
@@ -7269,8 +7280,9 @@ static int bfNadeSt; static float bfNadeU, bfThrowT;      /* granada: 0 guardada
 #define BOT_ARMOR_HEAD 0    /* 1: el blindaje tambien absorbe los disparos a la cabeza; 0: los disparos a la cabeza lo ignoran */
 #define PLATE_ROLL -0.45f   /* inclinacion de la placa en la mano (si se ve girada al reves, cambia el signo) */
 #define PLATE_SND_U 0.74f   /* a este punto de la animacion suena la placa entrando en el chaleco (el golpe del sonido cae a ~0,9) */
-#define LEAN_D 0.45f        /* cuanto te asomas de lado (m) */
-#define LEAN_ROLL 0.12f     /* inclinacion de la camara al asomarte (rad); si se inclina hacia el lado contrario, cambia el signo */
+#define LEAN_ANG 0.42f      /* inclinacion maxima del cuerpo al asomarte, desde la cadera (rad, ~24 grados) */
+#define LEAN_ARM 0.67f      /* distancia de la cadera (el giro) a la cabeza (m): la cabeza se desplaza LEAN_ARM*sen(angulo) y baja LEAN_ARM*(1-cos) */
+#define LEAN_ROLL_K 0.80f   /* cuanto de la inclinacion del cuerpo llega a la camara en primera persona (1 = igual) */
 static float bfLean, bfLeanFrac;      /* bfLean: -1 izquierda .. 1 derecha (suave); bfLeanFrac: lo realmente asomado tras limitar por paredes */
 static int bfPlateCont;   /* hay otra placa a continuacion (L2 mantenido): el arma no sube entre una y otra */
 static float bfArmor, bfPlateU, bfPlateCloseT; static int bfPlateSt, bfPlates = PLATE_STOCK, bfSprintTog, bfPlateChain, bfPlateSnd;   /* chain: placas puestas en esta tanda; snd: ya sono la entrada de esta placa */
@@ -7339,7 +7351,7 @@ static void resetAmmo(void) {
     wsel = 0; wCD = wReload = wSwap = wKick = wFlash = 0; firedLatch = 0;
 #ifdef PS2_ONLINE
     bfAds = bfBloom = bfShake = bfSprA = bfNadeT = 0; bfStam = 1; bfSprint = bfStamLock = bfNadePend = 0; bfNadeSt = 0; bfNadeU = bfThrowT = 0; bfNades = netMode ? 0 : 2; bfSmokes = netMode ? 0 : 2; bfNadeKind = 0;
-    bfLean = bfLeanFrac = bfRest = 0; bfLeanOffX = bfLeanOffZ = 0;
+    bfLean = bfLeanFrac = bfRest = 0; bfLeanOffX = bfLeanOffZ = bfLeanDrop = 0;
     bfArmor = PLATE_HP * PLATE_N; bfPlateU = 0; bfPlateSt = 0; bfPlates = PLATE_STOCK; bfSprintTog = 0; bfPlateChain = bfPlateSnd = 0; bfPlateCloseT = 0;
     memset(bfSpot, 0, sizeof bfSpot); memset(bfDT, 0, sizeof bfDT); memset(nades, 0, sizeof nades); memset(booms, 0, sizeof booms); memset(smokes, 0, sizeof smokes); memset(smokeHoles, 0, sizeof smokeHoles); memset(pts, 0, sizeof pts); memset(trcs, 0, sizeof trcs); memset(cass, 0, sizeof cass); memset(scr, 0, sizeof scr); bfFlashT = 0; goreReset();
 #endif
@@ -7482,7 +7494,7 @@ static void fireWeapon(void) {
     float f[3] = { -sinf(P.yaw) * cp, sp, -cosf(P.yaw) * cp };
     float r[3] = { cosf(P.yaw), 0, -sinf(P.yaw) };
     float u[3] = { r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0] };
-    float o[3] = { P.x + bfLeanOffX, P.y + 1.62f - 0.5f * P.cr, P.z + bfLeanOffZ };
+    float o[3] = { P.x + bfLeanOffX, P.y + 1.62f - 0.5f * P.cr - bfLeanDrop, P.z + bfLeanOffZ };
     if (S.cam) {   /* tercera persona: el rayo sale de la camara, a la altura del personaje, y pasa por la mira */
         float c[3]; tpsCamera(&c[0], &c[1], &c[2]);
         float k = (o[0] - c[0]) * f[0] + (o[1] - c[1]) * f[1] + (o[2] - c[2]) * f[2]; if (k < 0) k = 0;
@@ -7964,6 +7976,7 @@ static void goreDraw(void) {
     for (int i = 0; i < nbots; i++) {            /* charcos */
         const Ragdoll *rd = &rds[i]; if (!rd->on || rd->pr < 0.05f) continue;
         float c[3] = { rd->px, rd->py, rd->pz }; if (!bfProj(c[0], c[1], c[2], &sx, &sy, &zd, &ps) || rd->pr * ps < 1.0f) continue;
+        if (fxScreenOut(sx, sy, rd->pr * ps * 1.3f) || fxHidden(c[0], c[1], c[2], rd->pr * 1.3f)) continue;
         goreFan(c, TA[0], TB[0], rd->pr, 8, RGBA(104, 8, 10, 215), RGBA(84, 6, 8, 200), (unsigned)(i * 7919 + 13), 1, 1);
     }
     for (int i = 0; i < GORE_ND; i++) {
@@ -7973,6 +7986,8 @@ static void goreDraw(void) {
         if (ex * N6[ax][0] + ey * N6[ax][1] + ez * N6[ax][2] <= 0) continue;                   /* se ve desde el lado de la superficie */
         if (ex * ex + ey * ey + ez * ez > 38.0f * 38.0f) continue;
         if (!bfProj(c[0], c[1], c[2], &sx, &sy, &zd, &ps) || d->r * ps < 0.8f) continue;
+        { float br = d->r * (ax ? 2.7f : 1.4f);                                 /* radio que incluye el chorreo de las paredes */
+          if (fxScreenOut(sx, sy, br * ps) || fxHidden(c[0], c[1], c[2], br)) continue; }
         float u = clampf(d->age / 25.0f, 0, 1); int cr = (int)lerpf(150, 82, u), cg = (int)lerpf(10, 6, u), cb = (int)lerpf(12, 8, u);
         int n = d->r * ps > 6 ? 6 : 4;
         goreFan(c, TA[ax], TB[ax], d->r, n, RGBA(cr, cg, cb, 225), RGBA(cr * 0.8f, cg, cb, 205), d->seed, 1, ax ? 1.25f : 1);
@@ -7996,11 +8011,14 @@ static void bfDrawFx(void) {
     }
     for (int i = 0; i < 8; i++) if (scr[i].a > 0) {         /* marcas de quemadura en el suelo */
         if (!bfProj(scr[i].x, 0.02f, scr[i].z, &sx, &sy, &zd, &ps)) continue;
-        float rad = scr[i].r * ps, e; { float ex, ey, eq; int ez; if (bfProj(scr[i].x, 0.02f, scr[i].z - scr[i].r, &ex, &ey, &ez, &eq)) e = fabsf(ey - sy) / rad; else e = 0.3f; if (e < 0.05f) continue; if (e > 1) e = 1; }
+        float rad = scr[i].r * ps, e;
+        if (fxScreenOut(sx, sy, rad) || fxHidden(scr[i].x, 0.02f, scr[i].z, scr[i].r)) continue;
+        { float ex, ey, eq; int ez; if (bfProj(scr[i].x, 0.02f, scr[i].z - scr[i].r, &ex, &ey, &ez, &eq)) e = fabsf(ey - sy) / rad; else e = 0.3f; if (e < 0.05f) continue; if (e > 1) e = 1; }
         bfFan(sx, sy, zd, rad, 8, RGBA(20, 16, 14, (int)scr[i].a), RGBA(20, 16, 14, 0), e);
     }
     {   /* sombras blandas bajo los soldados */
         for (int i = 0; i < nbots; i++) if (bots[i].alive && bfProj(bots[i].x, bots[i].py + 0.02f, bots[i].z, &sx, &sy, &zd, &ps)) {
+            if (botOcc[i] || fxScreenOut(sx, sy, 0.6f * ps)) continue;
             float ex, ey, eq; int ez; float e = 0.3f; if (bfProj(bots[i].x, bots[i].py + 0.02f, bots[i].z - 0.5f, &ex, &ey, &ez, &eq)) e = clampf(fabsf(ey - sy) / (0.5f * ps), 0.08f, 1);
             bfFan(sx, sy, zd, 0.55f * ps, 6, RGBA(10, 10, 10, 110), RGBA(10, 10, 10, 0), e);
         }
@@ -8014,8 +8032,9 @@ static void bfDrawFx(void) {
             float x2, y2, p2; int z2; if (!bfProj(q->x - q->vx * 0.05f, q->y - q->vy * 0.05f, q->z - q->vz * 0.05f, &x2, &y2, &z2, &p2)) continue;
             int a = (int)(clampf(q->t / q->T * 2, 0, 1) * q->a); u32c c = RGBA(q->r, q->gc, q->b, a);
             float w = 0.8f * SH / 224.0f; gfx_tri(sx - w, sy, zd, c, sx + w, sy, zd, c, x2, y2, zd, RGBA(q->r, q->gc, q->b, 0)); continue; }
-        if (q->kind == 4) { float h = fmaxf(1.0f, sz * ps); gfx_rect(sx - h, sy - h, sx + h, sy + h, RGBA(q->r, q->gc, q->b, 255)); continue; }
+        if (q->kind == 4) { float h = fmaxf(1.0f, sz * ps); if (fxScreenOut(sx, sy, h)) continue; gfx_rect(sx - h, sy - h, sx + h, sy + h, RGBA(q->r, q->gc, q->b, 255)); continue; }
         float rad = clampf(sz * ps, 1, 260);
+        if (fxScreenOut(sx, sy, rad) || (rad >= 7.0f && fxHidden(q->x, q->y, q->z, sz))) continue;       /* fuera de la imagen, o humo/fuego tapado por una pared */
         float fade = q->kind == 3 ? (1 - u) * (1 - u) : (u < 0.15f ? u / 0.15f : 1 - (u - 0.15f) / 0.85f);
         int r = q->r, g = q->gc, b = q->b;
         if (q->kind == 2) { r = (int)lerpf(255, 95, u); g = (int)lerpf(200, 45, u); b = (int)lerpf(90, 28, u); }
@@ -8113,7 +8132,16 @@ static void bfSmokeShot(const float *o, const float *d, float tMax) {   /* rayo 
         float m[3] = { c[0] - o[0], c[1] - o[1], c[2] - o[2] }, tc = m[0] * d[0] + m[1] * d[1] + m[2] * d[2];
         float h2 = r * r - (m[0] * m[0] + m[1] * m[1] + m[2] * m[2] - tc * tc); if (h2 <= 0) continue;
         float h = sqrtf(h2), t0 = fmaxf(0, tc - h), t1 = fminf(tMax, tc + h); if (t1 - t0 < 0.1f) continue;
-        SmokeHole *k = &smokeHoles[smokeHoleNext++ % SMOKE_HOLES]; k->on = 1; k->age = 0;
+        float tm = (t0 + t1) * 0.5f, mid[3] = { o[0] + d[0] * tm, o[1] + d[1] * tm, o[2] + d[2] * tm };
+        SmokeHole *k = NULL;
+        for (int j = 0; j < SMOKE_HOLES && !k; j++) {            /* ya hay un hueco abierto casi en el mismo punto: se reutiliza (rafagas) */
+            SmokeHole *e = &smokeHoles[j]; if (!e->on) continue;
+            float q0 = (e->a[0] + e->b[0]) * 0.5f - mid[0], q1 = (e->a[1] + e->b[1]) * 0.5f - mid[1], q2 = (e->a[2] + e->b[2]) * 0.5f - mid[2];
+            if (q0 * q0 + q1 * q1 + q2 * q2 < (SMOKE_HOLE_R * 0.9f) * (SMOKE_HOLE_R * 0.9f)) k = e;
+        }
+        if (k) { if (k->age > 0.08f) k->age = 0.08f; }           /* sigue abierto del todo y vuelve a empezar a cerrarse */
+        else { k = &smokeHoles[smokeHoleNext++ % SMOKE_HOLES]; k->age = 0; }
+        k->on = 1;
         for (int j = 0; j < 3; j++) { k->a[j] = o[j] + d[j] * t0; k->b[j] = o[j] + d[j] * t1; }
     }
 }
@@ -8121,8 +8149,8 @@ static void bfSmokeShot(const float *o, const float *d, float tMax) {   /* rayo 
  * La nube es un unico disco suave (opaco en el centro, borde que se desvanece) con el tamano de la esfera de humo, centrado en ella y de cara a la camara.
  * Se dibuja como una malla de celdas en pantalla (12x12 de base); alrededor de cada hueco de bala las celdas se subdividen y el hueco se recorta de la
  * imagen con borde suave, asi el agujero es pequeno y la nube sigue siendo una sola pieza. Sin huecos son ~110 cuadrados por nube. */
-#define SMK_QMAX 1400
-typedef struct { float ax, ay, bx, by, hp; } SmkHoleS;      /* hueco proyectado: segmento (bala) y radio, en pixeles */
+#define SMK_QMAX 1100        /* tope de celdas por nube; las subdivisiones paran antes (700) para que las celdas base nunca se queden sin dibujar */
+typedef struct { float ax, ay, bx, by, hp, inf; } SmkHoleS;      /* inf: radio hasta donde el hueco afecta al alfa (px) */      /* hueco proyectado: segmento (bala) y radio, en pixeles */
 static struct { float cx, cy, R, A; int zd, nh, quads; SmkHoleS h[SMOKE_HOLES]; } smk;
 static float segDist2(float px, float py, const SmkHoleS *h) {
     float dx = h->bx - h->ax, dy = h->by - h->ay, l = dx * dx + dy * dy, t = 0;
@@ -8130,10 +8158,14 @@ static float segDist2(float px, float py, const SmkHoleS *h) {
     float qx = h->ax + dx * t - px, qy = h->ay + dy * t - py;
     return sqrtf(qx * qx + qy * qy);
 }
-static float smkAlpha(float x, float y) {                  /* alfa de la imagen en un punto de la pantalla: disco suave menos los huecos */
+static float smkAlpha(float x, float y, const SmkHoleS *const *rel, int nr) {      /* alfa de la imagen en un punto: disco suave menos los huecos que tocan la celda */
     float dx = x - smk.cx, dy = y - smk.cy, r = sqrtf(dx * dx + dy * dy) / smk.R;
     float a = 1 - sstep(0.5f, 1.0f, r);
-    for (int i = 0; i < smk.nh && a > 0; i++) a *= clampf((segDist2(x, y, &smk.h[i]) - smk.h[i].hp) / (smk.h[i].hp * 0.7f + 0.6f), 0, 1);
+    for (int i = 0; i < nr && a > 0; i++) {
+        const SmkHoleS *h = rel[i]; float qx = x - h->ax, qy = y - h->ay, d2 = qx * qx + qy * qy;
+        if (d2 >= h->inf * h->inf) continue;                                   /* fuera de la influencia del hueco: sin raiz cuadrada */
+        a *= clampf((sqrtf(d2) - h->hp) / (h->hp * 0.7f + 0.6f), 0, 1);
+    }
     return a * smk.A;
 }
 static void smkCell(float x0, float y0, float x1, float y1, int depth) {
@@ -8141,16 +8173,19 @@ static void smkCell(float x0, float y0, float x1, float y1, int depth) {
     float mx = (x0 + x1) * 0.5f, my = (y0 + y1) * 0.5f, sz = x1 - x0, hd = sz * 0.7072f;
     float dc = sqrtf((mx - smk.cx) * (mx - smk.cx) + (my - smk.cy) * (my - smk.cy));
     if (dc - hd > smk.R) return;                                                   /* celda fuera del disco */
-    if (depth < 4) for (int i = 0; i < smk.nh; i++) {
-        const SmkHoleS *h = &smk.h[i];
-        if (sz > fmaxf(2.5f, h->hp * 0.6f) && segDist2(mx, my, h) < h->hp * 1.7f + hd + 1.0f) {       /* cerca de un hueco: se subdivide */
+    const SmkHoleS *rel[SMOKE_HOLES]; int nr = 0;                                  /* huecos que alcanzan esta celda (la mayoria de celdas no tiene ninguno) */
+    for (int i = 0; i < smk.nh; i++) {
+        const SmkHoleS *h = &smk.h[i]; float qx = mx - h->ax, qy = my - h->ay, d2 = qx * qx + qy * qy, sr = h->hp * 1.7f + hd + 1.0f;
+        if (d2 >= sr * sr) continue;
+        rel[nr++] = h;
+        if (depth < 4 && smk.quads < 700 && sz > fmaxf(3.0f, h->hp * 0.6f)) {                         /* cerca de un hueco: se subdivide */
             float hx = sz * 0.5f;
             smkCell(x0, y0, x0 + hx, y0 + hx, depth + 1); smkCell(x0 + hx, y0, x1, y0 + hx, depth + 1);
             smkCell(x0, y0 + hx, x0 + hx, y1, depth + 1); smkCell(x0 + hx, y0 + hx, x1, y1, depth + 1);
             return;
         }
     }
-    float a00 = smkAlpha(x0, y0), a10 = smkAlpha(x1, y0), a01 = smkAlpha(x0, y1), a11 = smkAlpha(x1, y1);
+    float a00 = smkAlpha(x0, y0, rel, nr), a10 = smkAlpha(x1, y0, rel, nr), a01 = smkAlpha(x0, y1, rel, nr), a11 = smkAlpha(x1, y1, rel, nr);
     if (a00 < 1 && a10 < 1 && a01 < 1 && a11 < 1) return;
     u32c c00 = RGBA(186, 190, 192, (int)a00), c10 = RGBA(186, 190, 192, (int)a10), c01 = RGBA(186, 190, 192, (int)a01), c11 = RGBA(186, 190, 192, (int)a11);
     gfx_tri(x0, y0, smk.zd, c00, x1, y0, smk.zd, c10, x1, y1, smk.zd, c11);
@@ -8175,7 +8210,13 @@ static void bfDrawSmoke(void) {
             if (mx * mx + my * my + mz * mz > (rad + 0.6f) * (rad + 0.6f)) continue;
             float hx, hy, hps; int hz;          /* el hueco es UN punto redondo: el centro del tramo de bala dentro de la nube (asi no se estira en linea al moverte) */
             if (!bfProj(mx + c[0], my + c[1], mz + c[2], &hx, &hy, &hz, &hps)) continue;
-            SmkHoleS *o = &smk.h[smk.nh++]; o->ax = o->bx = hx; o->ay = o->by = hy; o->hp = fmaxf(1.0f, hr * hps);
+            float hpx = fmaxf(1.0f, hr * hps); int merged = 0;
+            for (int j = 0; j < smk.nh && !merged; j++) {                       /* un hueco encima de otro: se funden (una rafaga al mismo punto no multiplica el coste) */
+                SmkHoleS *e = &smk.h[j]; float qx = hx - e->ax, qy = hy - e->ay, lim = fmaxf(e->hp, hpx) * 0.5f;
+                if (qx * qx + qy * qy < lim * lim) { if (hpx > e->hp) { e->hp = hpx; e->inf = hpx * 1.7f + 0.6f; } merged = 1; }
+            }
+            if (merged) continue;
+            SmkHoleS *o = &smk.h[smk.nh++]; o->ax = o->bx = hx; o->ay = o->by = hy; o->hp = hpx; o->inf = hpx * 1.7f + 0.6f;
         }
         float x0 = smk.cx - smk.R, y0 = smk.cy - smk.R, cs = 2.0f * smk.R / 12.0f;
         for (int j = 0; j < 12; j++) for (int i = 0; i < 12; i++) smkCell(x0 + i * cs, y0 + j * cs, x0 + (i + 1) * cs, y0 + (j + 1) * cs, 0);
@@ -8703,19 +8744,23 @@ static void updatePlayer(const Pad *pd, float dt, int canAct) {
     }
     P.pitch = clampf(P.pitch, -1.45f, 1.45f);
 #ifdef PS2_ONLINE
-    {   /* ASOMARSE: con L1 mantenido, cruceta izquierda/derecha. Se limita para no meter la camara en una pared. */
+    {   /* ASOMARSE: con L1 mantenido, cruceta izquierda/derecha. El cuerpo se inclina desde la cadera: la cabeza se mueve en arco (se desplaza y baja un poco).
+         * Se limita para no meter la cabeza en una pared. Vale en primera y en tercera persona. */
         int ld = 0;
-        if (canAct && P.alive && !S.cam && (pd->down & B_L1) && !bfSprint && !bfPlateSt) ld = ((pd->down & B_RIGHT) ? 1 : 0) - ((pd->down & B_LEFT) ? 1 : 0);
-        bfLean = lerpf(bfLean, (float)ld, clampf(dt * 10, 0, 1));
+        if (canAct && P.alive && (pd->down & B_L1) && !bfSprint && !bfPlateSt) ld = ((pd->down & B_RIGHT) ? 1 : 0) - ((pd->down & B_LEFT) ? 1 : 0);
+        bfLean = lerpf(bfLean, (float)ld, clampf(dt * 8, 0, 1));
         float rx = cosf(P.yaw), rz = -sinf(P.yaw), sg = bfLean >= 0 ? 1.0f : -1.0f, eh = P.y + 1.62f - 0.5f * P.cr;
-        float o[3] = { P.x, eh, P.z }, dd[3] = { rx * sg, 0, rz * sg };
-        float room = fabsf(bfLean) > 0.01f ? wallDist(o, dd, LEAN_D + 0.3f) - 0.28f : LEAN_D;      /* sitio libre hacia ese lado */
-        float off = fabsf(bfLean) * fminf(LEAN_D, fmaxf(room, 0.0f));
-        bfLeanOffX = rx * off * sg; bfLeanOffZ = rz * off * sg; bfLeanFrac = off * sg / LEAN_D;
+        float phi = fabsf(bfLean) * LEAN_ANG, lat = LEAN_ARM * sinf(phi);
+        if (lat > 0.005f) {
+            float o[3] = { P.x, eh, P.z }, dd[3] = { rx * sg, 0, rz * sg };
+            float room = wallDist(o, dd, lat + 0.3f) - 0.28f;                   /* sitio libre hacia ese lado */
+            if (room < lat) { lat = fmaxf(room, 0.0f); phi = asinf(clampf(lat / LEAN_ARM, 0, 1)); }
+        }
+        bfLeanOffX = rx * lat * sg; bfLeanOffZ = rz * lat * sg; bfLeanDrop = LEAN_ARM * (1 - cosf(phi)); bfLeanFrac = sg * phi / LEAN_ANG;
     }
     {   /* APOYAR EL ARMA: apuntando junto a una pared o esquina el arma descansa en ella (menos dispersion y retroceso) */
         int want = 0;
-        if (canAct && P.alive && !S.cam && bfAds > 0.5f && !bfSprint) {
+        if (canAct && P.alive && bfAds > 0.5f && !bfSprint) {
             static const float ang[5] = { 0.0f, 0.7854f, -0.7854f, 1.5708f, -1.5708f }, lim[5] = { 0.75f, 0.85f, 0.85f, 0.65f, 0.65f };      /* delante, diagonales y lados */
             float o[3] = { P.x, P.y + 1.45f - 0.5f * P.cr, P.z };
             for (int i = 0; i < 5 && !want; i++) { float a = P.yaw + ang[i], d[3] = { -sinf(a), 0, -cosf(a) }; if (wallDist(o, d, lim[i]) < lim[i] - 0.001f) want = 1; }
@@ -9039,16 +9084,307 @@ static void vpDrawRig(const M34 *wm) {
         emitPoly(v, 3, 0);
     }
 }
+/* ---------- Escopeta Ithaca M37 de baja poligonizacion ----------
+ * Generada a partir de M37_Shotgun.obj (5186 triangulos, 18 piezas): se quitaron los 8 tornillos, cada pieza se simplifico con colapso de aristas
+ * (QEM) conservando silueta y borde, y la bomba se reconstruyo como un prisma octogonal con estrias alternadas (la malla original solo la
+ * deformaba). Colores planos por triangulo, sin texturas. Espacio del arma: x derecha, y arriba, z adelante (boca en +z), igual que wbox();
+ * escala real (~1,1 m), receptor en el origen y bomba centrada en z = 0,33 (su posicion de reposo).
+ *   SGM: 297 triangulos  (primera persona, cuerpo: receptor, canon, tubo, culata, guardamonte, gatillo, mira, abrazadera y tapa)
+ *   SGP: 128 triangulos  (primera persona, bomba: se desplaza en z al montar el arma, ver drawVM)
+ *   SGL: 181 triangulos  (soldado en tercera persona, cuerpo y bomba juntos)
+ * Colores (SG_PAL): 0 receptor, 1 canon, 2 tubo, 3 culata, 4 bomba, 5 estria de la bomba, 6 guardamonte y gatillo, 7 abrazadera, 8 tapa, 9 mira. */
+#define SG_GY -0.0250f   /* punto de agarre (muneca de la culata) en el espacio del arma */
+#define SG_GZ -0.1197f
+#define SGM_NV 182
+#define SGM_NT 297
+static const float SGM_V[SGM_NV * 3] = {
+    0.0104f, 0.0518f, -0.0544f, 0.0099f, 0.0543f, 0.1162f, 0.0130f, -0.0078f, -0.0641f,
+    0.0201f, 0.0482f, 0.1169f, 0.0136f, -0.0073f, 0.1170f, 0.0206f, 0.0455f, -0.0530f,
+    0.0199f, -0.0024f, 0.1169f, 0.0000f, 0.0562f, 0.1170f, 0.0203f, 0.0413f, -0.0745f,
+    0.0208f, -0.0024f, -0.0651f, -0.0000f, -0.0103f, -0.0636f, 0.0000f, 0.0541f, -0.0539f,
+    -0.0104f, 0.0518f, -0.0544f, -0.0098f, 0.0543f, 0.1169f, -0.0130f, -0.0078f, -0.0641f,
+    -0.0201f, 0.0482f, 0.1169f, -0.0136f, -0.0073f, 0.1170f, -0.0206f, 0.0455f, -0.0530f,
+    -0.0199f, -0.0024f, 0.1168f, -0.0204f, 0.0397f, -0.0742f, -0.0208f, -0.0024f, -0.0651f,
+    -0.0000f, -0.0103f, 0.1170f, -0.0030f, 0.0483f, -0.0765f, 0.0103f, -0.0009f, 0.0972f,
+    0.0091f, -0.0019f, 0.0283f, -0.0091f, -0.0019f, 0.0972f, -0.0103f, -0.0009f, 0.0283f,
+    0.0099f, -0.0091f, 0.0972f, 0.0103f, -0.0085f, 0.0282f, 0.0000f, -0.0103f, 0.0282f,
+    -0.0103f, -0.0085f, 0.0972f, -0.0104f, -0.0085f, 0.0282f, -0.0144f, 0.0422f, 0.1190f,
+    -0.0145f, 0.0424f, 0.1107f, -0.0058f, 0.0278f, 0.1190f, -0.0037f, 0.0264f, 0.1107f,
+    0.0077f, 0.0283f, 0.1190f, 0.0118f, 0.0322f, 0.1107f, 0.0129f, 0.0466f, 0.1190f,
+    0.0110f, 0.0488f, 0.1107f, -0.0024f, 0.0532f, 0.1190f, -0.0023f, 0.0534f, 0.1107f,
+    -0.0131f, 0.0386f, 0.6491f, -0.0051f, 0.0262f, 0.6491f, 0.0126f, 0.0336f, 0.6490f,
+    0.0099f, 0.0499f, 0.6491f, -0.0064f, 0.0525f, 0.6492f, -0.0093f, 0.0444f, 0.6491f,
+    0.0015f, 0.0494f, 0.6487f, 0.0092f, 0.0437f, 0.6488f, 0.0049f, 0.0309f, 0.6491f,
+    -0.0132f, 0.0022f, 0.1107f, -0.0107f, -0.0015f, 0.4340f, -0.0009f, -0.0067f, 0.4340f,
+    -0.0020f, -0.0066f, 0.1107f, 0.0085f, -0.0045f, 0.4370f, 0.0087f, -0.0036f, 0.1107f,
+    0.0140f, 0.0070f, 0.4362f, 0.0136f, 0.0064f, 0.1107f, 0.0067f, 0.0196f, 0.4367f,
+    0.0095f, 0.0167f, 0.1107f, -0.0009f, 0.0205f, 0.1107f, -0.0107f, 0.0164f, 0.4345f,
+    -0.0107f, 0.0153f, 0.1107f, -0.0178f, 0.0037f, 0.4573f, 0.0169f, -0.0044f, 0.4545f,
+    0.0018f, 0.0270f, 0.4528f, -0.0119f, -0.0071f, 0.4421f, -0.0156f, 0.0179f, 0.4418f,
+    0.0111f, 0.0468f, -0.0750f, 0.0194f, 0.0038f, -0.1549f, 0.0195f, 0.0040f, -0.1913f,
+    0.0197f, -0.0175f, -0.4162f, 0.0195f, -0.0521f, -0.2212f, 0.0196f, -0.1219f, -0.4162f,
+    0.0195f, -0.0810f, -0.1759f, 0.0195f, -0.0677f, -0.2106f, 0.0193f, -0.0584f, -0.1623f,
+    0.0019f, -0.0392f, -0.1371f, 0.0060f, -0.0241f, -0.1077f, 0.0113f, -0.0065f, -0.0641f,
+    0.0013f, -0.0914f, -0.1673f, 0.0199f, -0.0197f, -0.4498f, 0.0000f, -0.1286f, -0.4453f,
+    -0.0007f, -0.0122f, -0.4509f, 0.0193f, -0.1206f, -0.4453f, 0.0205f, -0.1283f, -0.4324f,
+    0.0195f, -0.0025f, -0.0646f, 0.0195f, -0.0316f, -0.1400f, 0.0195f, 0.0404f, -0.0738f,
+    -0.0110f, 0.0468f, -0.0750f, -0.0193f, 0.0038f, -0.1549f, -0.0194f, 0.0040f, -0.1913f,
+    -0.0196f, -0.0175f, -0.4162f, 0.0000f, 0.0502f, -0.0758f, 0.0000f, 0.0067f, -0.1591f,
+    0.0000f, 0.0125f, -0.1955f, 0.0000f, -0.0072f, -0.4164f, 0.0000f, -0.0097f, -0.0629f,
+    0.0000f, -0.0638f, -0.1572f, -0.0194f, -0.0524f, -0.2203f, -0.0013f, -0.0644f, -0.2322f,
+    -0.0195f, -0.1219f, -0.4162f, 0.0000f, -0.0676f, -0.2172f, 0.0000f, -0.1323f, -0.4164f,
+    -0.0194f, -0.0817f, -0.1743f, -0.0194f, -0.0677f, -0.2106f, -0.0193f, -0.0584f, -0.1623f,
+    -0.0192f, -0.0301f, -0.1353f, -0.0112f, -0.0065f, -0.0641f, -0.0198f, -0.0203f, -0.4499f,
+    -0.0200f, -0.1225f, -0.4445f, -0.0012f, -0.1392f, -0.4323f, -0.0194f, -0.0025f, -0.0646f,
+    -0.0194f, 0.0404f, -0.0738f, 0.0002f, 0.0508f, 0.6292f, 0.0021f, 0.0606f, 0.6319f,
+    0.0013f, 0.0522f, 0.6335f, -0.0003f, 0.0522f, 0.6336f, -0.0019f, 0.0522f, 0.6331f,
+    -0.0000f, 0.0509f, 0.6292f, -0.0003f, 0.0521f, 0.6262f, -0.0026f, 0.0594f, 0.6274f,
+    0.0042f, -0.0213f, -0.0549f, 0.0015f, -0.0084f, -0.0350f, -0.0042f, -0.0217f, -0.0552f,
+    0.0042f, -0.0138f, -0.0770f, 0.0042f, -0.0084f, -0.0652f, -0.0042f, -0.0138f, -0.0770f,
+    -0.0042f, -0.0084f, -0.0652f, -0.0041f, -0.0325f, -0.0539f, 0.0041f, -0.0303f, -0.0559f,
+    -0.0049f, -0.0388f, -0.0448f, 0.0049f, -0.0378f, -0.0460f, -0.0050f, -0.0367f, -0.0151f,
+    0.0051f, -0.0364f, -0.0137f, -0.0050f, -0.0385f, -0.0077f, 0.0051f, -0.0393f, -0.0086f,
+    -0.0050f, -0.0252f, -0.0069f, 0.0051f, -0.0222f, -0.0060f, -0.0050f, -0.0098f, -0.0201f,
+    -0.0050f, -0.0137f, 0.0041f, 0.0051f, -0.0098f, -0.0201f, -0.0050f, -0.0098f, 0.0131f,
+    0.0051f, -0.0098f, 0.0131f, -0.0018f, -0.0085f, -0.0518f, 0.0019f, -0.0085f, -0.0518f,
+    0.0019f, -0.0210f, -0.0515f, -0.0018f, -0.0085f, -0.0330f, -0.0018f, -0.0250f, -0.0485f,
+    0.0019f, -0.0085f, -0.0330f, 0.0019f, -0.0201f, -0.0440f, 0.0019f, -0.0317f, -0.0463f,
+    -0.0012f, -0.0332f, -0.0441f, -0.0113f, 0.0181f, 0.4302f, -0.0185f, 0.0056f, 0.4187f,
+    -0.0108f, -0.0057f, 0.4301f, -0.0064f, -0.0078f, 0.4182f, 0.0021f, -0.0096f, 0.4302f,
+    0.0071f, -0.0069f, 0.4183f, 0.0143f, 0.0038f, 0.4307f, 0.0149f, 0.0079f, 0.4183f,
+    -0.0102f, 0.0347f, 0.4184f, -0.0100f, 0.0347f, 0.4300f, -0.0095f, 0.0179f, 0.4183f,
+    0.0096f, 0.0347f, 0.4223f, -0.0086f, 0.0315f, 0.4566f, 0.0095f, 0.0315f, 0.4801f,
+    0.0095f, 0.0210f, 0.4806f, -0.0085f, 0.0210f, 0.4806f, -0.0082f, 0.0315f, 0.4804f,
+    0.0096f, 0.0315f, 0.4566f, 0.0091f, 0.0315f, 0.4561f, 0.0095f, -0.0017f, 0.4561f,
+    -0.0080f, 0.0315f, 0.4561f, -0.0085f, -0.0017f, 0.4561f, -0.0086f, 0.0124f, 0.4650f,
+    0.0096f, 0.0122f, 0.4650f, 0.0096f, -0.0017f, 0.4650f, -0.0085f, -0.0017f, 0.4650f,
+    -0.0086f, 0.0187f, 0.4728f, 0.0096f, 0.0186f, 0.4724f,
+};
+static const unsigned char SGM_T[SGM_NT * 3] = {
+    5, 9, 8, 9, 5, 6, 0, 3, 5, 0, 5, 8, 11, 0, 8, 11, 8, 22, 8, 2, 10, 11, 7, 0,
+    4, 7, 21, 7, 1, 0, 28, 27, 23, 28, 23, 24, 0, 1, 3, 21, 16, 30, 21, 30, 27, 2, 9, 6,
+    6, 5, 3, 9, 2, 8, 6, 3, 7, 21, 27, 4, 4, 2, 6, 1, 7, 3, 6, 7, 4, 17, 19, 20,
+    20, 18, 17, 31, 29, 24, 31, 24, 26, 12, 17, 15, 12, 22, 19, 12, 19, 17, 11, 22, 12, 8, 10, 14,
+    8, 14, 19, 11, 12, 7, 16, 21, 7, 7, 12, 13, 22, 8, 19, 30, 16, 14, 30, 14, 31, 12, 15, 13,
+    7, 13, 15, 14, 18, 20, 18, 15, 17, 20, 19, 14, 27, 30, 25, 16, 18, 14, 18, 16, 7, 18, 7, 15,
+    29, 28, 24, 29, 31, 14, 29, 14, 10, 27, 28, 2, 27, 2, 4, 30, 31, 26, 30, 26, 25, 29, 10, 2,
+    29, 2, 28, 26, 24, 25, 24, 23, 25, 27, 25, 23, 42, 33, 43, 43, 33, 35, 43, 35, 37, 43, 37, 44,
+    44, 37, 39, 44, 39, 45, 45, 39, 41, 45, 41, 46, 46, 41, 33, 46, 33, 42, 47, 32, 40, 42, 34, 32,
+    48, 40, 38, 46, 42, 47, 42, 50, 34, 49, 48, 38, 50, 36, 34, 48, 47, 40, 47, 42, 32, 50, 49, 38,
+    50, 38, 36, 44, 45, 49, 45, 46, 48, 45, 48, 49, 43, 50, 42, 46, 47, 48, 43, 44, 50, 44, 49, 50,
+    52, 51, 54, 52, 54, 53, 53, 54, 56, 53, 56, 55, 55, 56, 58, 55, 58, 57, 57, 58, 60, 57, 60, 59,
+    59, 60, 61, 59, 61, 62, 62, 61, 63, 62, 63, 51, 51, 52, 62, 52, 67, 62, 52, 53, 67, 53, 55, 67,
+    55, 57, 65, 67, 65, 64, 62, 68, 59, 59, 68, 66, 67, 55, 65, 57, 59, 66, 57, 66, 65, 62, 67, 68,
+    66, 68, 64, 68, 67, 64, 65, 66, 64, 89, 87, 88, 89, 88, 70, 88, 79, 78, 88, 78, 77, 77, 81, 75,
+    71, 75, 76, 71, 77, 75, 70, 88, 77, 70, 77, 71, 71, 73, 74, 71, 74, 72, 71, 76, 73, 71, 72, 97,
+    71, 97, 96, 69, 70, 95, 69, 95, 94, 70, 71, 95, 71, 96, 95, 77, 78, 99, 79, 80, 98, 81, 77, 99,
+    74, 73, 101, 74, 101, 104, 73, 103, 101, 73, 76, 103, 76, 81, 103, 76, 75, 81, 89, 70, 69, 87, 80, 79,
+    87, 79, 88, 72, 74, 86, 72, 86, 82, 72, 82, 84, 72, 84, 97, 86, 74, 104, 86, 104, 112, 84, 82, 85,
+    84, 85, 83, 82, 86, 85, 86, 112, 85, 85, 112, 83, 114, 91, 108, 114, 108, 113, 102, 101, 100, 92, 106, 105,
+    92, 105, 107, 91, 92, 107, 91, 107, 108, 92, 93, 102, 92, 102, 100, 92, 100, 106, 92, 96, 97, 92, 97, 93,
+    90, 94, 95, 90, 95, 91, 91, 95, 92, 92, 95, 96, 107, 99, 78, 108, 98, 109, 81, 99, 107, 78, 79, 108,
+    102, 104, 101, 101, 103, 100, 100, 103, 106, 106, 103, 81, 106, 81, 105, 105, 81, 107, 107, 78, 108, 108, 79, 98,
+    114, 90, 91, 113, 108, 109, 93, 110, 111, 93, 111, 102, 111, 112, 102, 93, 97, 84, 93, 84, 110, 112, 104, 102,
+    110, 83, 111, 83, 110, 84, 111, 83, 112, 116, 117, 115, 116, 118, 117, 116, 119, 118, 116, 120, 119, 120, 122, 121,
+    121, 122, 115, 115, 122, 116, 120, 116, 122, 123, 124, 125, 126, 127, 124, 126, 124, 123, 125, 128, 126, 125, 126, 123,
+    125, 124, 129, 125, 123, 131, 125, 131, 130, 123, 125, 130, 131, 123, 133, 123, 130, 132, 123, 132, 133, 133, 132, 134,
+    133, 134, 135, 132, 133, 137, 132, 137, 136, 132, 136, 134, 133, 135, 137, 137, 135, 139, 136, 137, 139, 136, 139, 138,
+    135, 138, 139, 140, 138, 141, 138, 139, 141, 139, 140, 142, 140, 141, 143, 139, 142, 144, 141, 139, 144, 141, 144, 143,
+    125, 129, 128, 130, 131, 133, 130, 133, 132, 134, 136, 138, 135, 134, 138, 139, 138, 140, 145, 146, 147, 146, 150, 151,
+    146, 151, 147, 150, 148, 149, 150, 149, 151, 147, 149, 145, 151, 152, 147, 148, 145, 149, 152, 153, 149, 149, 153, 152,
+    149, 152, 151, 147, 152, 149, 155, 164, 157, 164, 155, 154, 154, 165, 163, 161, 162, 165, 164, 154, 162, 159, 161, 160,
+    159, 160, 158, 157, 159, 158, 156, 157, 158, 155, 157, 156, 155, 156, 154, 157, 164, 154, 157, 154, 156, 159, 157, 156,
+    159, 156, 158, 159, 158, 160, 161, 159, 160, 161, 160, 154, 164, 161, 154, 162, 161, 164, 160, 161, 165, 154, 160, 165,
+    154, 163, 162, 181, 167, 168, 176, 166, 179, 179, 175, 173, 179, 173, 178, 171, 177, 178, 177, 176, 179, 177, 179, 178,
+    177, 171, 167, 177, 167, 181, 180, 176, 181, 180, 170, 166, 180, 166, 176, 168, 167, 170, 168, 170, 169, 169, 170, 180,
+    176, 177, 181, 171, 178, 173, 179, 166, 175, 174, 172, 173, 174, 173, 175, 174, 175, 166, 171, 173, 172, 169, 180, 181,
+    169, 181, 168,
+};
+static const unsigned char SGM_C[SGM_NT] = {
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 9, 9, 9, 9, 9,
+    9, 9, 9, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+    6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8,
+    8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+};
+#define SGP_NV 66
+#define SGP_NT 128
+static const float SGP_V[SGP_NV * 3] = {
+    0.0221f, 0.0164f, 0.4175f, 0.0092f, 0.0289f, 0.4175f, -0.0092f, 0.0289f, 0.4175f,
+    -0.0221f, 0.0164f, 0.4175f, -0.0221f, -0.0012f, 0.4175f, -0.0092f, -0.0137f, 0.4175f,
+    0.0092f, -0.0137f, 0.4175f, 0.0221f, -0.0012f, 0.4175f, 0.0272f, 0.0186f, 0.3955f,
+    0.0113f, 0.0341f, 0.3955f, -0.0113f, 0.0341f, 0.3955f, -0.0272f, 0.0186f, 0.3955f,
+    -0.0272f, -0.0033f, 0.3955f, -0.0113f, -0.0188f, 0.3955f, 0.0113f, -0.0188f, 0.3955f,
+    0.0272f, -0.0033f, 0.3955f, 0.0274f, 0.0187f, 0.3693f, 0.0114f, 0.0343f, 0.3693f,
+    -0.0114f, 0.0343f, 0.3693f, -0.0274f, 0.0187f, 0.3693f, -0.0275f, -0.0035f, 0.3693f,
+    -0.0114f, -0.0191f, 0.3693f, 0.0114f, -0.0191f, 0.3693f, 0.0274f, -0.0035f, 0.3693f,
+    0.0274f, 0.0187f, 0.3431f, 0.0114f, 0.0343f, 0.3431f, -0.0114f, 0.0343f, 0.3431f,
+    -0.0274f, 0.0187f, 0.3431f, -0.0275f, -0.0035f, 0.3431f, -0.0114f, -0.0191f, 0.3431f,
+    0.0114f, -0.0191f, 0.3431f, 0.0274f, -0.0035f, 0.3431f, 0.0274f, 0.0187f, 0.3170f,
+    0.0114f, 0.0343f, 0.3170f, -0.0114f, 0.0343f, 0.3170f, -0.0274f, 0.0187f, 0.3170f,
+    -0.0275f, -0.0035f, 0.3170f, -0.0114f, -0.0191f, 0.3170f, 0.0114f, -0.0191f, 0.3170f,
+    0.0274f, -0.0035f, 0.3170f, 0.0274f, 0.0187f, 0.2908f, 0.0114f, 0.0343f, 0.2908f,
+    -0.0114f, 0.0343f, 0.2908f, -0.0274f, 0.0187f, 0.2908f, -0.0275f, -0.0035f, 0.2908f,
+    -0.0114f, -0.0191f, 0.2908f, 0.0114f, -0.0191f, 0.2908f, 0.0274f, -0.0035f, 0.2908f,
+    0.0272f, 0.0186f, 0.2646f, 0.0113f, 0.0341f, 0.2646f, -0.0113f, 0.0341f, 0.2646f,
+    -0.0272f, 0.0186f, 0.2646f, -0.0272f, -0.0033f, 0.2646f, -0.0113f, -0.0188f, 0.2646f,
+    0.0113f, -0.0188f, 0.2646f, 0.0272f, -0.0033f, 0.2646f, 0.0264f, 0.0181f, 0.2425f,
+    0.0110f, 0.0330f, 0.2425f, -0.0110f, 0.0330f, 0.2425f, -0.0264f, 0.0181f, 0.2425f,
+    -0.0264f, -0.0029f, 0.2425f, -0.0110f, -0.0177f, 0.2425f, 0.0110f, -0.0177f, 0.2425f,
+    0.0264f, -0.0029f, 0.2425f, 0.0000f, 0.0076f, 0.4175f, 0.0000f, 0.0076f, 0.2425f,
+};
+static const unsigned char SGP_T[SGP_NT * 3] = {
+    0, 9, 1, 0, 8, 9, 1, 10, 2, 1, 9, 10, 2, 11, 3, 2, 10, 11, 3, 12, 4, 3, 11, 12,
+    4, 13, 5, 4, 12, 13, 5, 14, 6, 5, 13, 14, 6, 15, 7, 6, 14, 15, 7, 8, 0, 7, 15, 8,
+    8, 17, 9, 8, 16, 17, 9, 18, 10, 9, 17, 18, 10, 19, 11, 10, 18, 19, 11, 20, 12, 11, 19, 20,
+    12, 21, 13, 12, 20, 21, 13, 22, 14, 13, 21, 22, 14, 23, 15, 14, 22, 23, 15, 16, 8, 15, 23, 16,
+    16, 25, 17, 16, 24, 25, 17, 26, 18, 17, 25, 26, 18, 27, 19, 18, 26, 27, 19, 28, 20, 19, 27, 28,
+    20, 29, 21, 20, 28, 29, 21, 30, 22, 21, 29, 30, 22, 31, 23, 22, 30, 31, 23, 24, 16, 23, 31, 24,
+    24, 33, 25, 24, 32, 33, 25, 34, 26, 25, 33, 34, 26, 35, 27, 26, 34, 35, 27, 36, 28, 27, 35, 36,
+    28, 37, 29, 28, 36, 37, 29, 38, 30, 29, 37, 38, 30, 39, 31, 30, 38, 39, 31, 32, 24, 31, 39, 32,
+    32, 41, 33, 32, 40, 41, 33, 42, 34, 33, 41, 42, 34, 43, 35, 34, 42, 43, 35, 44, 36, 35, 43, 44,
+    36, 45, 37, 36, 44, 45, 37, 46, 38, 37, 45, 46, 38, 47, 39, 38, 46, 47, 39, 40, 32, 39, 47, 40,
+    40, 49, 41, 40, 48, 49, 41, 50, 42, 41, 49, 50, 42, 51, 43, 42, 50, 51, 43, 52, 44, 43, 51, 52,
+    44, 53, 45, 44, 52, 53, 45, 54, 46, 45, 53, 54, 46, 55, 47, 46, 54, 55, 47, 48, 40, 47, 55, 48,
+    48, 57, 49, 48, 56, 57, 49, 58, 50, 49, 57, 58, 50, 59, 51, 50, 58, 59, 51, 60, 52, 51, 59, 60,
+    52, 61, 53, 52, 60, 61, 53, 62, 54, 53, 61, 62, 54, 63, 55, 54, 62, 63, 55, 56, 48, 55, 63, 56,
+    64, 0, 1, 64, 1, 2, 64, 2, 3, 64, 3, 4, 64, 4, 5, 64, 5, 6, 64, 6, 7, 64, 7, 0,
+    65, 57, 56, 65, 58, 57, 65, 59, 58, 65, 60, 59, 65, 61, 60, 65, 62, 61, 65, 63, 62, 65, 56, 63,
+};
+static const unsigned char SGP_C[SGP_NT] = {
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5,
+};
+#define SGL_NV 111
+#define SGL_NT 181
+static const float SGL_V[SGL_NV * 3] = {
+    -0.0000f, 0.0559f, -0.0532f, 0.0028f, 0.0563f, 0.1170f, 0.0203f, -0.0045f, -0.0648f,
+    0.0201f, 0.0482f, 0.1169f, 0.0198f, -0.0031f, 0.1170f, 0.0208f, 0.0433f, -0.0747f,
+    -0.0192f, -0.0064f, -0.0645f, -0.0197f, 0.0500f, 0.1169f, -0.0193f, -0.0052f, 0.1163f,
+    -0.0206f, 0.0442f, -0.0751f, 0.0103f, -0.0050f, 0.0970f, 0.0109f, -0.0044f, 0.0283f,
+    -0.0091f, -0.0019f, 0.0972f, -0.0090f, -0.0080f, 0.0283f, -0.0144f, 0.0422f, 0.1190f,
+    -0.0145f, 0.0424f, 0.1107f, 0.0024f, 0.0249f, 0.1190f, 0.0055f, 0.0249f, 0.1107f,
+    0.0100f, 0.0522f, 0.1189f, 0.0072f, 0.0535f, 0.1107f, -0.0122f, 0.0402f, 0.6492f,
+    -0.0051f, 0.0262f, 0.6491f, 0.0099f, 0.0322f, 0.6486f, 0.0086f, 0.0489f, 0.6486f,
+    -0.0064f, 0.0525f, 0.6492f, -0.0132f, 0.0022f, 0.1107f, -0.0072f, -0.0063f, 0.4402f,
+    0.0036f, -0.0073f, 0.1107f, 0.0138f, 0.0008f, 0.4366f, 0.0138f, 0.0120f, 0.1107f,
+    0.0067f, 0.0196f, 0.4367f, -0.0065f, 0.0200f, 0.1107f, -0.0113f, 0.0163f, 0.4373f,
+    -0.0178f, 0.0037f, 0.4573f, 0.0169f, -0.0044f, 0.4545f, 0.0018f, 0.0270f, 0.4528f,
+    0.0174f, 0.0444f, -0.0746f, 0.0196f, 0.0054f, -0.1594f, 0.0198f, -0.0198f, -0.4437f,
+    0.0194f, -0.0545f, -0.2257f, 0.0197f, -0.1244f, -0.4223f, 0.0195f, -0.0794f, -0.1758f,
+    0.0169f, -0.0313f, -0.1304f, 0.0171f, -0.0079f, -0.0635f, 0.0018f, -0.0906f, -0.1684f,
+    0.0183f, -0.1236f, -0.4455f, -0.0002f, -0.0108f, -0.4505f, -0.0079f, 0.0483f, -0.0752f,
+    -0.0194f, 0.0056f, -0.1600f, -0.0196f, -0.0175f, -0.4162f, 0.0000f, 0.0125f, -0.1955f,
+    -0.0164f, -0.0084f, -0.0633f, -0.0193f, -0.0572f, -0.2224f, -0.0009f, -0.0620f, -0.2243f,
+    -0.0196f, -0.1297f, -0.4392f, -0.0007f, -0.1378f, -0.4302f, -0.0194f, -0.0803f, -0.1757f,
+    -0.0192f, -0.0301f, -0.1353f, -0.0198f, -0.0203f, -0.4499f, -0.0194f, 0.0404f, -0.0738f,
+    0.0004f, -0.0215f, -0.0551f, 0.0015f, -0.0084f, -0.0350f, 0.0020f, -0.0138f, -0.0770f,
+    0.0042f, -0.0084f, -0.0652f, -0.0042f, -0.0084f, -0.0652f, -0.0001f, -0.0373f, -0.0505f,
+    -0.0050f, -0.0365f, -0.0092f, 0.0051f, -0.0381f, -0.0099f, 0.0051f, -0.0222f, -0.0060f,
+    -0.0002f, -0.0098f, -0.0201f, -0.0025f, -0.0098f, 0.0130f, -0.0111f, 0.0181f, 0.4267f,
+    -0.0164f, -0.0021f, 0.4181f, -0.0052f, -0.0098f, 0.4302f, 0.0157f, 0.0007f, 0.4230f,
+    -0.0107f, 0.0347f, 0.4232f, 0.0096f, 0.0347f, 0.4223f, 0.0221f, 0.0164f, 0.4175f,
+    0.0092f, 0.0289f, 0.4175f, -0.0092f, 0.0289f, 0.4175f, -0.0221f, 0.0164f, 0.4175f,
+    -0.0221f, -0.0012f, 0.4175f, -0.0092f, -0.0137f, 0.4175f, 0.0092f, -0.0137f, 0.4175f,
+    0.0221f, -0.0012f, 0.4175f, 0.0272f, 0.0186f, 0.3955f, 0.0113f, 0.0341f, 0.3955f,
+    -0.0113f, 0.0341f, 0.3955f, -0.0272f, 0.0186f, 0.3955f, -0.0272f, -0.0033f, 0.3955f,
+    -0.0113f, -0.0188f, 0.3955f, 0.0113f, -0.0188f, 0.3955f, 0.0272f, -0.0033f, 0.3955f,
+    0.0272f, 0.0186f, 0.2646f, 0.0113f, 0.0341f, 0.2646f, -0.0113f, 0.0341f, 0.2646f,
+    -0.0272f, 0.0186f, 0.2646f, -0.0272f, -0.0033f, 0.2646f, -0.0113f, -0.0188f, 0.2646f,
+    0.0113f, -0.0188f, 0.2646f, 0.0272f, -0.0033f, 0.2646f, 0.0264f, 0.0181f, 0.2425f,
+    0.0110f, 0.0330f, 0.2425f, -0.0110f, 0.0330f, 0.2425f, -0.0264f, 0.0181f, 0.2425f,
+    -0.0264f, -0.0029f, 0.2425f, -0.0110f, -0.0177f, 0.2425f, 0.0110f, -0.0177f, 0.2425f,
+    0.0264f, -0.0029f, 0.2425f, 0.0000f, 0.0076f, 0.4175f, 0.0000f, 0.0076f, 0.2425f,
+};
+static const unsigned char SGL_T[SGL_NT * 3] = {
+    2, 5, 4, 0, 3, 5, 0, 5, 9, 5, 2, 6, 4, 1, 8, 0, 1, 3, 4, 5, 3, 4, 3, 1,
+    8, 10, 4, 6, 8, 9, 0, 9, 7, 5, 6, 9, 1, 0, 7, 8, 6, 13, 8, 7, 9, 10, 8, 12,
+    8, 1, 7, 10, 11, 2, 10, 2, 4, 8, 13, 12, 13, 6, 2, 13, 2, 11, 13, 11, 12, 11, 10, 12,
+    20, 15, 21, 21, 15, 17, 21, 17, 22, 22, 17, 19, 22, 19, 23, 23, 19, 24, 24, 19, 15, 24, 15, 20,
+    20, 14, 18, 20, 16, 14, 20, 22, 16, 23, 20, 18, 22, 23, 18, 22, 18, 16, 21, 22, 20, 24, 20, 23,
+    26, 25, 27, 26, 27, 28, 28, 27, 29, 28, 29, 30, 30, 29, 31, 30, 31, 32, 32, 31, 25, 25, 26, 32,
+    26, 34, 33, 30, 32, 35, 26, 28, 34, 28, 30, 35, 28, 35, 34, 35, 32, 33, 32, 26, 33, 34, 35, 33,
+    36, 43, 42, 36, 42, 37, 37, 41, 39, 37, 42, 41, 37, 39, 40, 37, 40, 38, 37, 38, 46, 37, 46, 50,
+    36, 37, 48, 36, 48, 47, 37, 50, 48, 41, 42, 44, 42, 43, 51, 40, 39, 53, 40, 53, 55, 39, 44, 53,
+    39, 41, 44, 46, 38, 45, 38, 40, 45, 40, 55, 45, 59, 48, 57, 59, 57, 51, 54, 53, 52, 48, 52, 56,
+    48, 56, 57, 48, 49, 54, 48, 54, 52, 48, 50, 46, 48, 46, 49, 56, 44, 42, 54, 55, 53, 52, 53, 44,
+    52, 44, 56, 56, 42, 57, 57, 42, 51, 59, 47, 48, 49, 58, 54, 49, 46, 58, 58, 45, 54, 45, 58, 46,
+    54, 45, 55, 62, 63, 61, 62, 61, 60, 60, 61, 64, 65, 66, 67, 65, 67, 66, 66, 67, 68, 67, 66, 68,
+    69, 66, 70, 66, 68, 70, 68, 69, 70, 60, 64, 62, 68, 66, 69, 71, 76, 75, 74, 75, 76, 72, 74, 73,
+    72, 73, 71, 72, 71, 73, 74, 72, 73, 75, 74, 71, 71, 74, 76, 77, 86, 78, 77, 85, 86, 78, 87, 79,
+    78, 86, 87, 79, 88, 80, 79, 87, 88, 80, 89, 81, 80, 88, 89, 81, 90, 82, 81, 89, 90, 82, 91, 83,
+    82, 90, 91, 83, 92, 84, 83, 91, 92, 84, 85, 77, 84, 92, 85, 85, 94, 86, 85, 93, 94, 86, 95, 87,
+    86, 94, 95, 87, 96, 88, 87, 95, 96, 88, 97, 89, 88, 96, 97, 89, 98, 90, 89, 97, 98, 90, 99, 91,
+    90, 98, 99, 91, 100, 92, 91, 99, 100, 92, 93, 85, 92, 100, 93, 93, 102, 94, 93, 101, 102, 94, 103, 95,
+    94, 102, 103, 95, 104, 96, 95, 103, 104, 96, 105, 97, 96, 104, 105, 97, 106, 98, 97, 105, 106, 98, 107, 99,
+    98, 106, 107, 99, 108, 100, 99, 107, 108, 100, 101, 93, 100, 108, 101, 109, 77, 78, 109, 78, 79, 109, 79, 80,
+    109, 80, 81, 109, 81, 82, 109, 82, 83, 109, 83, 84, 109, 84, 77, 110, 102, 101, 110, 103, 102, 110, 104, 103,
+    110, 105, 104, 110, 106, 105, 110, 107, 106, 110, 108, 107, 110, 101, 108,
+};
+static const unsigned char SGL_C[SGL_NT] = {
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+};
+static const u32c SG_PAL[10] = { RGBA(46, 49, 55, 255), RGBA(74, 78, 86, 255), RGBA(92, 96, 104, 255), RGBA(116, 78, 46, 255), RGBA(130, 90, 54, 255),
+                                 RGBA(92, 60, 34, 255), RGBA(38, 40, 45, 255), RGBA(118, 122, 130, 255), RGBA(60, 63, 70, 255), RGBA(224, 128, 58, 255) };
+/* soldado con escopeta (tercera persona): igual que vpDrawRig; el punto de agarre de la culata cae sobre la mano del hueso BN_WEAP */
+static void sgDrawRig(const M34 *wm) {
+    float tv[SGL_NV][3];
+    for (int i = 0; i < SGL_NV; i++) {
+        float lp[3] = { 0.17f - SGL_V[i * 3], 1.12f + (SGL_V[i * 3 + 1] - SG_GY), -0.38f - (SGL_V[i * 3 + 2] - SG_GZ) };
+        m34Xf(wm, lp, tv[i]);
+    }
+    const float *m = wm->m;
+    float det = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) + m[2] * (m[4] * m[9] - m[5] * m[8]), sg = det < 0 ? -1.0f : 1.0f;
+    for (int t = 0; t < SGL_NT; t++) {
+        const float *a = tv[SGL_T[t * 3]], *b = tv[SGL_T[t * 3 + 1]], *c = tv[SGL_T[t * 3 + 2]];
+        float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+        float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, nl = nx * nx + ny * ny + nz * nz;
+        if (nl < 1e-18f) continue;
+        float fx = (a[0] + b[0] + c[0]) * (1.0f / 3), fy = (a[1] + b[1] + c[1]) * (1.0f / 3), fz = (a[2] + b[2] + c[2]) * (1.0f / 3);
+        float ex = camX - fx, ey = camY - fy, ez = camZ - fz;
+        if (sg * (nx * ex + ny * ey + nz * ez) <= 0) continue;                        /* de espaldas: fuera, sin normalizar */
+        nl = sg / sqrtf(nl); nx *= nl; ny *= nl; nz *= nl;
+        float dist = sqrtf(ex * ex + ey * ey + ez * ez), shade = clampf(0.62f + 0.38f * (nx * -0.35f + ny * 0.8f + nz * 0.45f), 0.45f, 1.05f);
+        V v[3]; const float *pp[3] = { a, b, c };
+        for (int k = 0; k < 3; k++) { toView(pp[k][0], pp[k][1], pp[k][2], &v[k].x, &v[k].y, &v[k].z); fogColor(SG_PAL[SGL_C[t]], shade, dist, &v[k].r, &v[k].g, &v[k].b); }
+        emitPoly(v, 3, 0);
+    }
+}
 static const M34 *rigOverG = NULL;      /* si no es NULL, drawRig usa estas matrices de hueso (ragdoll) en vez de la animacion */
+static float rigLeanAng, rigLeanPivY;      /* inclinacion lateral del cuerpo (rad, + = derecha) y altura de la cadera: solo para el personaje del jugador */
 static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, int weap, float wx, float wy, float wz, float yaw, float tr, float tg, float tb, float flash) {
     if (!sphereVis(wx, wy + 0.9f, wz, 1.8f)) return;     /* fuera de la vista: no se transforma */
     static float tv[600][3];
+    int sgNear = (camX - wx) * (camX - wx) + (camZ - wz) * (camZ - wz) <= 18.0f * 18.0f;       /* cerca: malla M37 (181 triangulos) */
     SkPose po; M34 G[BN_N];
     if (rigOverG) memcpy(G, rigOverG, sizeof G);
     else {
         Rig gl = *g; gl.pist = (weap == 0); rigPose(&gl, &po);
         rigAimPitch(&gl, &po, pitch); rigReload(&gl, &po, reloadU);
         rigSolve(&po, wx, wy, wz, yaw, G);
+    }
+    if (rigLeanAng != 0 && !g->dead) {      /* asomarse: se gira todo el esqueleto alrededor del eje de avance, con pivote en la cadera */
+        float cs = cosf(rigLeanAng), sn = sinf(rigLeanAng), fx = -sinf(yaw), fz = -cosf(yaw), k = 1 - cs;
+        float R[3][3] = { { cs + k * fx * fx, -sn * fz, k * fx * fz }, { sn * fz, cs, -sn * fx }, { k * fx * fz, sn * fx, cs + k * fz * fz } };
+        float pv[3] = { wx, rigLeanPivY, wz };
+        for (int bn = 0; bn < BN_N; bn++) {
+            float *q = G[bn].m, n[12];
+            for (int i = 0; i < 3; i++) {
+                for (int j = 0; j < 3; j++) n[i * 4 + j] = R[i][0] * q[j] + R[i][1] * q[4 + j] + R[i][2] * q[8 + j];
+                float t0 = q[3] - pv[0], t1 = q[7] - pv[1], t2 = q[11] - pv[2];
+                n[i * 4 + 3] = R[i][0] * t0 + R[i][1] * t1 + R[i][2] * t2 + pv[i];
+            }
+            memcpy(q, n, sizeof n);
+        }
     }
     for (int i = 0; i < m->nv && i < 600; i++) {
         const float *p = &m->v[i * 3]; const unsigned char *s = &m->vb[i * 3];
@@ -9065,7 +9401,7 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
     }
     for (int f = 0; f < m->nf; f++) {
         int part = m->p[f];
-        if (part == 5 && weap == 0) continue;
+        if (part == 5 && (weap == 0 || (weap == 2 && sgNear))) continue;       /* arma del modelo: se sustituye por la pistola VP70 o la escopeta M37 */
         const unsigned short *qd = &m->f[f * 4];
         const float *a = tv[qd[0]], *b = tv[qd[1]], *c2 = tv[qd[2]];
         float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c2[0] - a[0], vy = c2[1] - a[1], vz = c2[2] - a[2];
@@ -9087,6 +9423,7 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
         }
         emitPoly(v, 4, 0);
     }
+    if (weap == 2 && sgNear) sgDrawRig(&G[BN_WEAP]);       /* escopeta M37 sujeta por el hueso del arma */
     if (weap == 0 && !g->dead) {       /* pistola: corredera y empunadura, sujetas por el hueso del arma */
         float lx0 = camX - wx, lz0 = camZ - wz;
         if (lx0 * lx0 + lz0 * lz0 <= 18.0f * 18.0f) vpDrawRig(&G[BN_WEAP]);       /* cerca: malla VP70 (72 triangulos) */
@@ -9117,7 +9454,7 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
         }
     }
     if (flash > 0 && !g->dead) {
-        float lp[3] = { 0.17f, 1.14f, (weap == 0 ? -0.62f : -1.08f) - 0.07f }, wp[3]; m34Xf(&G[BN_WEAP], lp, wp);
+        float lp[3] = { 0.17f, 1.14f, (weap == 0 ? -0.62f : (weap == 2 && sgNear ? -1.15f : -1.08f)) - 0.07f }, wp[3]; m34Xf(&G[BN_WEAP], lp, wp);
         obox(wp[0], wp[1], wp[2], .07f, .07f, .09f, yaw, RGBA(255, 214, 110, 255));
     }
 }
@@ -9152,6 +9489,7 @@ static void updateRigs(float dt) {
 static void drawBots(void) {
     for (int i = 0; i < nbots; i++) {
         const Bot *b = &bots[i];
+        botOcc[i] = 0;
         if (b->unused) continue;
 #ifdef PS2_ONLINE
         if (rds[i].on) {
@@ -9163,7 +9501,7 @@ static void drawBots(void) {
             continue;
         }
 #endif
-        if (ocHidden(b->x - 0.7f, b->py, b->z - 0.7f, b->x + 0.7f, b->py + 2.0f, b->z + 0.7f)) continue;
+        if ((botOcc[i] = (unsigned char)ocHidden(b->x - 0.7f, b->py, b->z - 0.7f, b->x + 0.7f, b->py + 2.0f, b->z + 0.7f))) continue;
         drawRig(botModel(i), &b->rg, b->rg.dead ? 0.0f : b->pitch, b->rl ? clampf(b->rlT / 1.7f, 0, 1) : -1.0f, 1, b->x, b->py, b->z, b->yaw, 1, 1, 1, 0);
 #ifdef PS2_ONLINE
         if (b->plating) {      /* placa en las manos: sube desde la cadera, se muestra y baja al chaleco */
@@ -9203,7 +9541,11 @@ static float charAnim(const Pad *pd, float dt) {
 }
 static void drawPlayerChar(void) {
     float ru = wReload > 0 ? clampf(1 - wReload / W[wsel].reload, 0, 1) : -1.0f;
+#ifdef PS2_ONLINE
+    rigLeanAng = bfLeanFrac * LEAN_ANG; rigLeanPivY = P.y + 0.95f - 0.3f * fminf(P.cr, 1.0f);      /* en tercera persona el personaje se inclina de lado */
+#endif
     drawRig(&voxM[0], &pRig, P.pitch, ru, wsel, P.x, P.y, P.z, P.yaw + dbgYaw, 0.85f, 1.0f, 1.3f, wFlash);
+    rigLeanAng = 0;
 }
 /* Piernas y botas del jugador: aparecen al mirar hacia abajo. */
 static void drawPlayerLegs(void) {
@@ -9297,9 +9639,10 @@ static const VMDef VMD[4] = {
     /* 1 fusil */     { { 0, -0.085f, -0.075f }, { 0.21f, -0.24f, 0.47f }, { 0.42f, -0.30f, -0.62f },
         { { 0.00f, -0.01f, -0.045f, 0.33f }, { 0.16f, -0.01f, -0.10f, 0.05f }, { 0.30f, -0.01f, -0.10f, 0.05f }, { 0.40f, -0.02f, -0.26f, 0.04f }, { 0.50f, -0.20f, -0.40f, 0.00f },
           { 0.60f, -0.14f, -0.30f, 0.03f }, { 0.70f, -0.02f, -0.15f, 0.05f }, { 0.76f, -0.01f, -0.10f, 0.05f }, { 0.86f, -0.05f, 0.00f, -0.01f }, { 1.00f, -0.01f, -0.045f, 0.33f } }, 0.70f },
-    /* 2 escopeta */  { { 0, -0.08f, -0.10f }, { 0.20f, -0.24f, 0.46f }, { 0.35f, -0.20f, 0.55f },
-        { { 0.00f, 0.0f, -0.03f, 0.33f }, { 0.12f, -0.18f, -0.35f, 0.05f }, { 0.24f, 0.0f, -0.07f, 0.02f }, { 0.34f, -0.18f, -0.35f, 0.05f }, { 0.46f, 0.0f, -0.07f, 0.02f },
-          { 0.56f, -0.18f, -0.35f, 0.05f }, { 0.68f, 0.0f, -0.07f, 0.02f }, { 0.78f, 0.0f, -0.03f, 0.20f }, { 0.88f, 0.0f, -0.03f, 0.44f }, { 1.00f, 0.0f, -0.03f, 0.33f } }, 0.90f },
+    /* 2 escopeta M37: agarre en la muneca de la culata (SG_GY, SG_GZ); la mano de apoyo sube a la bomba y al puerto de carga de la nueva malla */
+    /* 2 escopeta */  { { 0, SG_GY, SG_GZ }, { 0.20f, -0.185f, 0.44f }, { 0.35f, -0.20f, 0.55f },
+        { { 0.00f, 0.0f, -0.007f, 0.33f }, { 0.12f, -0.18f, -0.35f, 0.05f }, { 0.24f, 0.0f, -0.04f, 0.02f }, { 0.34f, -0.18f, -0.35f, 0.05f }, { 0.46f, 0.0f, -0.04f, 0.02f },
+          { 0.56f, -0.18f, -0.35f, 0.05f }, { 0.68f, 0.0f, -0.04f, 0.02f }, { 0.78f, 0.0f, -0.007f, 0.20f }, { 0.88f, 0.0f, -0.007f, 0.44f }, { 1.00f, 0.0f, -0.007f, 0.33f } }, 0.66f },
     /* 3 ametralladora */ { { 0, -0.09f, -0.10f }, { 0.22f, -0.27f, 0.50f }, { 0.30f, -0.25f, -0.50f },
         { { 0.00f, -0.01f, -0.04f, 0.32f }, { 0.16f, -0.01f, -0.10f, 0.03f }, { 0.30f, -0.01f, -0.10f, 0.03f }, { 0.40f, -0.01f, -0.30f, 0.03f }, { 0.50f, -0.22f, -0.45f, 0.00f },
           { 0.60f, -0.14f, -0.32f, 0.03f }, { 0.70f, -0.02f, -0.14f, 0.03f }, { 0.76f, -0.01f, -0.10f, 0.03f }, { 0.86f, -0.05f, 0.06f, -0.02f }, { 1.00f, -0.01f, -0.04f, 0.32f } }, 0.84f }
@@ -9339,6 +9682,27 @@ static void vpDrawVM(int withMag) {
         emitPoly(v, 3, 1);
     }
 }
+/* escopeta M37 en primera persona: cuerpo (SGM) y bomba (SGP, desplazada pdz en z); triangulos de frente con colores planos */
+static void sgDrawVM(float pdz) {
+    float pv[SGM_NV + SGP_NV][3];
+    for (int i = 0; i < SGM_NV; i++) wpt(SGM_V[i * 3], SGM_V[i * 3 + 1], SGM_V[i * 3 + 2], pv[i]);
+    for (int i = 0; i < SGP_NV; i++) wpt(SGP_V[i * 3], SGP_V[i * 3 + 1], SGP_V[i * 3 + 2] + pdz, pv[SGM_NV + i]);
+    for (int g = 0; g < 2; g++) {
+        const unsigned char *T = g ? SGP_T : SGM_T, *C = g ? SGP_C : SGM_C; int nt = g ? SGP_NT : SGM_NT; float (*pb)[3] = g ? pv + SGM_NV : pv;
+        for (int t = 0; t < nt; t++) {
+            const float *a = pb[T[t * 3]], *b = pb[T[t * 3 + 1]], *c = pb[T[t * 3 + 2]];
+            float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+            float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, nl = nx * nx + ny * ny + nz * nz;
+            if (nl < 1e-24f) continue;
+            if (nx * a[0] + ny * a[1] + nz * a[2] >= 0) continue;                    /* de espaldas a la camara (esta en el origen): fuera, sin normalizar */
+            nl = 1.0f / sqrtf(nl); nx *= nl; ny *= nl; nz *= nl;
+            float shade = clampf(0.7f + 0.3f * (ny * 0.8f - nx * 0.35f), 0.45f, 1.0f);
+            u32c col = SG_PAL[C[t]]; V v[3]; const float *pp[3] = { a, b, c };
+            for (int k = 0; k < 3; k++) { v[k].x = pp[k][0]; v[k].y = pp[k][1]; v[k].z = pp[k][2]; v[k].r = CR(col) * shade; v[k].g = CG(col) * shade; v[k].b = CB(col) * shade; }
+            emitPoly(v, 3, 1);
+        }
+    }
+}
 static void handR(float gx, float gy, float gz, const float *anchor, int glove) {   /* mano derecha en la empunadura (glove=0: solo antebrazo, sin cajas de guante) */
     u32c GLV = RGBA(52, 54, 58, 255), KNU = RGBA(92, 94, 100, 255), SL = RGBA(176, 152, 110, 255), SP = RGBA(142, 120, 84, 255);
     if (!glove) { float a0[3]; wpt(gx + 0.045f, gy - 0.012f, gz - 0.030f, a0); limb(anchor, a0, 0.036f, SL, SP); return; }
@@ -9360,6 +9724,29 @@ static void handL(float lx, float ly, float lz, const float *anchor, int glove) 
     wbox(lx + 0.034f, ly + 0.012f, lz - 0.010f, 0.009f, 0.015f, 0.027f, GLV);
     float a[3]; wpt(lx - 0.035f, ly - 0.01f, lz - 0.05f, a); limb(anchor, a, 0.036f, SP, SL);
 }
+/* Manos de la VP70 (espacio del arma; empunadura: x +-0,019, y de -0,16 a 0, cara trasera z ~ -0,09, cara delantera de z -0,054 (arriba) a -0,011 (abajo);
+ * guardamonte delante, z 0,02..0,14; gatillo z 0,043..0,103). Antes la pistola no llevaba guantes y los antebrazos terminaban en el aire. */
+static void handRPistol(const float *anchor) {      /* derecha: palma por detras y por el lado derecho, tres dedos por delante, indice recto junto al marco y pulgar en el lado izquierdo */
+    u32c GLV = RGBA(52, 54, 58, 255), KNU = RGBA(92, 94, 100, 255), SL = RGBA(176, 152, 110, 255), SP = RGBA(142, 120, 84, 255);
+    static const float FY[3] = { -0.080f, -0.104f, -0.128f }, FZ[3] = { -0.034f, -0.024f, -0.014f };      /* los dedos siguen la inclinacion de la cara delantera */
+    wbox(0.031f, -0.070f, -0.062f, 0.012f, 0.045f, 0.036f, GLV);          /* palma sobre el lado derecho */
+    wbox(0.0f, -0.082f, -0.102f, 0.030f, 0.046f, 0.012f, GLV);            /* detras de la empunadura */
+    wbox(0.0f, -0.020f, -0.100f, 0.028f, 0.016f, 0.014f, GLV);            /* lomo de la mano, justo bajo la corredera */
+    for (int i = 0; i < 3; i++) wbox(0.0f, FY[i], FZ[i], 0.026f, 0.011f, 0.011f, GLV);       /* dedos rodeando la parte delantera */
+    wbox(0.027f, -0.015f, 0.060f, 0.008f, 0.010f, 0.048f, GLV);           /* indice recto junto al marco, fuera del guardamonte */
+    wbox(-0.027f, -0.008f, 0.000f, 0.009f, 0.011f, 0.050f, GLV);          /* pulgar en el lado izquierdo del marco */
+    wbox(0.034f, -0.040f, -0.095f, 0.008f, 0.012f, 0.018f, KNU);          /* nudillos */
+    float a[3]; wpt(0.040f, -0.098f, -0.118f, a); limb(anchor, a, 0.036f, SL, SP);
+}
+static void handLPistol(float lx, float ly, float lz, const float *anchor) {   /* izquierda de apoyo (se mueve con la mano al recargar): palma en el lado izquierdo, dedos por delante sobre los de la derecha, pulgar junto al marco */
+    u32c GLV = RGBA(52, 54, 58, 255), KNU = RGBA(92, 94, 100, 255), SL = RGBA(176, 152, 110, 255), SP = RGBA(142, 120, 84, 255);
+    static const float DY[3] = { -0.020f, -0.044f, -0.068f }, DZ[3] = { 0.020f, 0.030f, 0.039f };
+    wbox(lx, ly - 0.010f, lz - 0.010f, 0.012f, 0.045f, 0.040f, GLV);      /* palma sobre el lado izquierdo */
+    wbox(lx - 0.004f, ly + 0.030f, lz - 0.045f, 0.010f, 0.012f, 0.010f, KNU);      /* nudillos */
+    for (int i = 0; i < 3; i++) wbox(lx + 0.030f, ly + DY[i], lz + DZ[i], 0.040f, 0.010f, 0.010f, GLV);   /* dedos por delante, encima de los de la derecha */
+    wbox(lx - 0.010f, ly + 0.036f, lz + 0.060f, 0.009f, 0.011f, 0.050f, GLV);     /* pulgar junto al marco */
+    float a[3]; wpt(lx - 0.045f, ly - 0.035f, lz - 0.075f, a); limb(anchor, a, 0.036f, SP, SL);
+}
 static void magItem(int w, float x, float y, float z) {   /* cargador (o caja) segun el arma */
     if (w == 0) { wbox(x, y, z, 0.016f, 0.036f, 0.019f, C_GD); wbox(x, y - 0.038f, z, 0.018f, 0.006f, 0.021f, C_GM); }
     else if (w == 1) { wbox(x, y, z, 0.019f, 0.05f, 0.023f, C_GD); wbox(x, y - 0.05f, z + 0.01f, 0.0195f, 0.025f, 0.023f, C_GD); wbox(x, y - 0.09f, z + 0.02f, 0.021f, 0.016f, 0.024f, C_GM); }
@@ -9373,7 +9760,7 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
     float pitch = d->tilt[0] * k + kick * 0.7f, yaw = d->tilt[1] * k + 0.05f - swap * 0.4f, roll = d->tilt[2] * k - swap * 0.5f;
 #ifdef PS2_ONLINE
     /* apuntando: el arma pasa al centro y la mira queda a la altura del ojo; corriendo: arma baja y ladeada */
-    static const float ADSP[4][3] = { { 0, -0.134f, 0.46f }, { 0, -0.200f, 0.50f }, { 0, -0.178f, 0.50f }, { 0, -0.212f, 0.52f } };   /* y mas bajo: el arma ya no tapa el centro de la pantalla */
+    static const float ADSP[4][3] = { { 0, -0.134f, 0.46f }, { 0, -0.200f, 0.50f }, { 0, -0.123f, 0.48f }, { 0, -0.212f, 0.52f } };   /* y mas bajo: el arma ya no tapa el centro de la pantalla */
     float ad = bfAds, sa = bfSprA; bobx *= 1 - 0.85f * ad; boby *= 1 - 0.85f * ad;
     yaw = yaw * (1 - ad) + 0.0f * ad + 0.32f * sa; pitch = pitch * (1 - 0.6f * ad) + (-0.30f) * sa; roll = roll * (1 - ad) + 0.25f * sa;
 #endif
@@ -9422,21 +9809,9 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
             wbox(0, -0.085f, 0.035f, 0.019f, 0.05f, 0.023f, GD); wbox(0, -0.15f, 0.045f, 0.0195f, 0.025f, 0.023f, GD); wbox(0, -0.19f, 0.055f, 0.021f, 0.016f, 0.024f, GM);
             wbox(0, -0.115f, 0.0125f, 0.016f, 0.012f, 0.002f, GL); wbox(-0.0195f, -0.12f, 0.04f, 0.0015f, 0.03f, 0.014f, GM);
         }
-    } else if (w == 2) {   /* ---- escopeta ---- */
+    } else if (w == 2) {   /* ---- escopeta M37: 425 triangulos (SGM + SGP), la bomba sigue a la mano izquierda al montar ---- */
         if (reloading && u >= 0.72f) pumpZ = lh[2];
-        wbox(0, 0.01f, 0.0f, 0.032f, 0.05f, 0.14f, GD);                         /* caja de mecanismos */
-        wbox(0.0335f, 0.02f, 0.02f, 0.002f, 0.015f, 0.045f, RGBA(12, 12, 14, 255));
-        wbox(0, -0.047f, 0.03f, 0.02f, 0.004f, 0.04f, RGBA(10, 10, 12, 255));   /* ventana de carga */
-        wbox(0, 0.04f, 0.50f, 0.015f, 0.015f, 0.38f, GM);                       /* canon */
-        wbox(0, 0.058f, 0.50f, 0.006f, 0.003f, 0.36f, GL);                      /* cinta ventilada */
-        wbox(0, 0.066f, 0.86f, 0.004f, 0.006f, 0.004f, RGBA(224, 128, 58, 255));/* mira */
-        wbox(0, 0.04f, 0.885f, 0.018f, 0.018f, 0.012f, GD);
-        wbox(0, -0.005f, 0.46f, 0.012f, 0.012f, 0.33f, GM);                     /* tubo del cargador */
-        wbox(0, -0.005f, 0.795f, 0.016f, 0.016f, 0.01f, GD);
-        wbox(0, -0.012f, pumpZ, 0.034f, 0.03f, 0.10f, C_WD);                    /* bomba */
-        for (int i = 0; i < 4; i++) wbox(0, -0.012f, pumpZ - 0.07f + i * 0.045f, 0.0355f, 0.031f, 0.004f, C_WD2);
-        wbox(0, -0.08f, -0.10f, 0.02f, 0.05f, 0.026f, C_WD); wbox(0, -0.02f, -0.13f, 0.02f, 0.04f, 0.04f, C_WD2);   /* empunadura y culata */
-        wbox(0, -0.04f, -0.01f, 0.004f, 0.004f, 0.05f, GM);
+        sgDrawVM(pumpZ - 0.33f);
     } else {               /* ---- ametralladora ---- */
         wbox(0, 0.0f, 0.0f, 0.042f, 0.05f, 0.17f, GM);                          /* receptor */
         wbox(0, 0.055f, 0.02f, 0.036f, 0.012f, 0.14f, GD);                      /* tapa */
@@ -9456,9 +9831,9 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
         wbox(0, 0.005f, -0.21f, 0.02f, 0.02f, 0.06f, GM);
         if (magSeated) { wbox(0, -0.1f, 0.03f, 0.05f, 0.05f, 0.07f, GD); wbox(0, -0.052f, 0.03f, 0.046f, 0.004f, 0.066f, GM); wbox(-0.052f, -0.07f, 0.03f, 0.004f, 0.02f, 0.05f, GL); }
     }
-    handR(d->grip[0], d->grip[1] + 0.012f, d->grip[2] + 0.004f, AR, w != 0);      /* pistola: sin cajas de guante alrededor del VP70 */
+    if (w == 0) handRPistol(AR); else handR(d->grip[0], d->grip[1] + 0.012f, d->grip[2] + 0.004f, AR, 1);      /* pistola: manos propias, medidas sobre el VP70 */
     float lx = lh[0], ly = lh[1], lz = lh[2];
-    handL(lx, ly, lz, AL, w != 0);
+    if (w == 0) handLPistol(lx, ly, lz, AL); else handL(lx, ly, lz, AL, 1);
     if (w != 2) {
         if (magOnHand) magItem(w, lx, ly + (u < 0.42f ? 0.0f : -0.01f), lz);
         if (reloading && u >= 0.34f && u < 0.52f) { float t = (u - 0.34f) / 0.18f; magItem(w, lx, ly - t * t * 0.55f, lz + t * 0.05f); }
@@ -9468,9 +9843,9 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
     }
     if (wFlash > 0) {
         float m = d->mz;
-        wbox(0, d->grip[1] * 0 + (w == 0 ? 0.03f : 0.02f), m + 0.02f, 0.045f, 0.045f, 0.03f, RGBA(255, 214, 110, 255));
-        wbox(0, (w == 0 ? 0.03f : 0.02f), m - 0.01f, 0.022f, 0.022f, 0.03f, RGBA(255, 250, 220, 255));
-        wbox(0, (w == 0 ? 0.03f : 0.02f), m + 0.04f, 0.012f, 0.07f, 0.01f, RGBA(255, 170, 60, 255)); wbox(0, (w == 0 ? 0.03f : 0.02f), m + 0.04f, 0.07f, 0.012f, 0.01f, RGBA(255, 170, 60, 255));
+        wbox(0, d->grip[1] * 0 + (w == 0 ? 0.03f : (w == 2 ? 0.04f : 0.02f)), m + 0.02f, 0.045f, 0.045f, 0.03f, RGBA(255, 214, 110, 255));
+        wbox(0, (w == 0 ? 0.03f : (w == 2 ? 0.04f : 0.02f)), m - 0.01f, 0.022f, 0.022f, 0.03f, RGBA(255, 250, 220, 255));
+        wbox(0, (w == 0 ? 0.03f : (w == 2 ? 0.04f : 0.02f)), m + 0.04f, 0.012f, 0.07f, 0.01f, RGBA(255, 170, 60, 255)); wbox(0, (w == 0 ? 0.03f : (w == 2 ? 0.04f : 0.02f)), m + 0.04f, 0.07f, 0.012f, 0.01f, RGBA(255, 170, 60, 255));
     }
 }
 #ifdef PS2_ONLINE
@@ -9914,13 +10289,14 @@ static void fpsTick(void) {
 static void fpsDraw(void) {
     if (!fpsOn) return;
     float t = SH / 224.0f, sc = t * 0.9f; char a[16], b[16];
-    char c[16]; snprintf(a, 16, "%d FPS", (int)(fpsShow + 0.5f)); snprintf(b, 16, "%d.%d MS", (int)fpsMs, (int)(fpsMs * 10) % 10); snprintf(c, 16, "OCL %d", ocCulledShow);
+    char c[16]; snprintf(a, 16, "%d FPS", (int)(fpsShow + 0.5f)); snprintf(b, 16, "%d.%d MS", (int)fpsMs, (int)(fpsMs * 10) % 10); snprintf(c, 16, "OCL %d", ocCulledShow); char e[16]; snprintf(e, 16, "FRU %d", frCulledShow);
     float w = textW(a, sc) > textW(b, sc * 0.75f) ? textW(a, sc) : textW(b, sc * 0.75f), x1 = SW - 4 * t, x0 = x1 - w - 6 * t, y0 = 3 * t;
     u32c col = fpsShow >= 50 ? RGBA(111, 207, 151, 255) : (fpsShow >= 30 ? RGBA(224, 168, 58, 255) : RGBA(229, 72, 77, 255));
-    gfx_rect(x0, y0, x1, y0 + 8 * sc + 16 * sc * 0.75f + 7 * t, RGBA(0, 0, 0, 140));
+    gfx_rect(x0, y0, x1, y0 + 8 * sc + 21 * sc * 0.75f + 8 * t, RGBA(0, 0, 0, 140));
     drawText(x1 - 3 * t - textW(a, sc) + sc * 0.5f * 0, y0 + 2 * t, sc, a, col);
     drawText(x1 - 3 * t - textW(b, sc * 0.75f), y0 + 3 * t + 8 * sc, sc * 0.75f, b, RGBA(143, 160, 166, 255));
     drawText(x1 - 3 * t - textW(c, sc * 0.75f), y0 + 4 * t + 8 * sc + 6 * sc * 0.75f, sc * 0.75f, c, RGBA(143, 160, 166, 255));
+    drawText(x1 - 3 * t - textW(e, sc * 0.75f), y0 + 5 * t + 8 * sc + 12 * sc * 0.75f, sc * 0.75f, e, RGBA(143, 160, 166, 255));
 }
 void game_frame(const Pad *pd, float dt) {
     float t = SH / 224.0f;
@@ -10175,9 +10551,9 @@ void game_frame(const Pad *pd, float dt) {
 #endif
         }
         if (S.cam) { float cx, cy, cz; tpsCamera(&cx, &cy, &cz); setCamera(cx, cy, cz, P.yaw, P.pitch); }
-        else setCamera(P.x + bfLeanOffX, P.y + 1.62f - 0.5f * P.cr + bob - (P.alive ? 0 : 1.1f), P.z + bfLeanOffZ, P.yaw, P.pitch);
+        else setCamera(P.x + bfLeanOffX, P.y + 1.62f - 0.5f * P.cr - bfLeanDrop + bob - (P.alive ? 0 : 1.1f), P.z + bfLeanOffZ, P.yaw, P.pitch);
 #ifdef PS2_ONLINE
-        camRoll += bfLeanFrac * LEAN_ROLL;        /* al asomarte la vista se inclina hacia ese lado */
+        if (!S.cam) camRoll += bfLeanFrac * LEAN_ANG * LEAN_ROLL_K;        /* al asomarte la vista se inclina con el cuerpo */
         camPitch -= bfPlateDip(); camRoll += bfPlateDip() * 0.25f;     /* reverencia de la camara al ponerte la placa */
         if (bfShake > 0) { camPitch += sinf(orbit * 0 + P.bob * 0 + bfShake * 61.0f) * 0.035f * bfShake; camYaw += rndf(-1, 1) * 0.03f * bfShake; camRoll += rndf(-1, 1) * 0.02f * bfShake; }
 #endif
