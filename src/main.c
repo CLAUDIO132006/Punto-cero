@@ -7222,11 +7222,22 @@ static const Weapon W[4] = {
 
 /* ---------- Estado de juego ---------- */
 enum { M_MENU, M_SETTINGS, M_PLAYING, M_ROUNDEND, M_PAUSE, M_END, M_OPTIONS, M_MP_MENU, M_MP_LOBBY, M_KEYS, M_CODE, M_LAB };
-typedef struct { float x, y, z, vx, vy, vz, yaw, pitch, hp; int alive, ground; float noise, bob, cr; int crWant; } Player;
+typedef struct { float x, y, z, vx, vy, vz, yaw, pitch, hp; int alive, ground; float noise, bob, cr; int crWant; int prone; } Player;      /* cr: 0 de pie, 1 agachado, PRONE_CR acostado; prone: esta acostado */
 static Rig pRig; static int pFired;      /* animacion del jugador (tercera persona) */
-typedef struct { float x, z, yaw, hp; int alive, state, burst; float react, fireCD, pause, strafe, strafeT, wx, wz, lkx, lkz, lost, timer, dead, step, walk, mv; int remote, wep, shots; float tx, ty, tz, tyaw, py, pitch; Rig rg; float cr, aimW, hitT, coverX, coverZ, coverT, peekT, px, pz, rlT; int crWant, cov, fireEv, rl; short path[48]; int pn, pi; float pgx, pgz, repT, stuck; int dummy, unused; } Bot;   /* dummy: soldado quieto del modo secreto; unused: ranura libre */
+typedef struct { float x, z, yaw, hp; int alive, state, burst; float react, fireCD, pause, strafe, strafeT, wx, wz, lkx, lkz, lost, timer, dead, step, walk, mv; int remote, wep, shots; float tx, ty, tz, tyaw, py, pitch; Rig rg; float cr, aimW, hitT, coverX, coverZ, coverT, peekT, px, pz, rlT; int crWant, cov, fireEv, rl; short path[48]; int pn, pi; float pgx, pgz, repT, stuck; int dummy, unused; float armor, plateT; int plates, plating; } Bot;   /* dummy: soldado quieto del modo secreto; unused: ranura libre */
 
+#define PRONE_CR 2.17f      /* valor de "cr" acostado: la camara queda a ~0,5 m y la caja de impacto a ~0,45 m (las formulas de altura ya usan cr) */
 static Player P;
+#ifdef PS2_ONLINE      /* campo de pruebas en PS2: ARRIBA cambia de granada (como en el juego), ABAJO pone un soldado, L1+ABAJO los borra */
+#define LAB_BANNER "ABAJO SOLDADO  L1+ABAJO BORRAR  ARRIBA GRANADA"
+#define LAB_HINT "ABAJO: SOLDADO   L1+ABAJO: BORRAR   ARRIBA: GRANADA"
+#define LAB_INGAME "EN JUEGO: ABAJO = SOLDADO  L1+ABAJO = BORRAR  ARRIBA = GRANADA"
+#else
+#define LAB_BANNER "ARRIBA: SOLDADO   ABAJO: BORRAR"
+#define LAB_HINT "ARRIBA: SOLDADO   ABAJO: BORRAR"
+#define LAB_INGAME "EN JUEGO: ARRIBA = NUEVO SOLDADO   ABAJO = BORRAR TODOS"
+#endif
+static float bfLeanOffX, bfLeanOffZ, bfRest;      /* desplazamiento lateral al asomarte (mundo) y arma apoyada 0..1: se usan en camara, disparos y bots */
 static Bot bots[MAXBOT];
 #ifdef PC_ONLINE
 static int netMode, mpShots, mpRounds = 5;           /* netMode: 0 sin red, 1 anfitrion, 2 cliente */
@@ -7253,16 +7264,21 @@ static int bfNadeSt; static float bfNadeU, bfThrowT;      /* granada: 0 guardada
 #define PLATE_N 3
 #define PLATE_HP 50.0f
 #define PLATE_T 1.7f        /* segundos que tarda en ponerse una placa */
-#define PLATE_STOCK 3       /* placas que llevas en la mochila al empezar cada ronda */
+#define PLATE_STOCK 6       /* placas de repuesto al empezar cada ronda, para ti y para cada bot (ademas de las 3 ya puestas: 9 en total) */
+#define BOT_PLATE_T 2.2f    /* segundos que tarda un soldado en ponerse una placa (agachado, detras de una cobertura) */
+#define BOT_ARMOR_HEAD 0    /* 1: el blindaje tambien absorbe los disparos a la cabeza; 0: los disparos a la cabeza lo ignoran */
 #define PLATE_ROLL -0.45f   /* inclinacion de la placa en la mano (si se ve girada al reves, cambia el signo) */
 #define PLATE_SND_U 0.74f   /* a este punto de la animacion suena la placa entrando en el chaleco (el golpe del sonido cae a ~0,9) */
+#define LEAN_D 0.45f        /* cuanto te asomas de lado (m) */
+#define LEAN_ROLL 0.12f     /* inclinacion de la camara al asomarte (rad); si se inclina hacia el lado contrario, cambia el signo */
+static float bfLean, bfLeanFrac;      /* bfLean: -1 izquierda .. 1 derecha (suave); bfLeanFrac: lo realmente asomado tras limitar por paredes */
 static int bfPlateCont;   /* hay otra placa a continuacion (L2 mantenido): el arma no sube entre una y otra */
 static float bfArmor, bfPlateU, bfPlateCloseT; static int bfPlateSt, bfPlates = PLATE_STOCK, bfSprintTog, bfPlateChain, bfPlateSnd;   /* chain: placas puestas en esta tanda; snd: ya sono la entrada de esta placa */
 typedef struct { float x, y, z, vx, vy, vz, t; int on, kind; } Nade;       /* kind: 0 fragmentacion, 1 humo */
 typedef struct { float x, y, z, t; } Boom;
 typedef struct { float x, y, z, age; int on; } Smoke;                       /* nube de una granada de humo */
 #define SMOKE_N 3           /* nubes a la vez (si hay mas, se reutiliza la mas vieja) */
-#define SMOKE_T 20.0f       /* segundos que dura la nube */
+#define SMOKE_T 40.0f       /* segundos que dura la nube (antes 20) */
 #define SMOKE_R 5.0f        /* radio maximo en metros */
 #define SMOKE_FUSE 2.0f     /* segundos desde el lanzamiento hasta que suelta el humo */
 static Nade nades[4]; static Boom booms[4]; static Smoke smokes[SMOKE_N];
@@ -7293,6 +7309,7 @@ enum { BS_PATROL, BS_SEARCH, BS_ALERT, BS_ENGAGE, BS_COVER, BS_HIDE, BS_PEEK };
 
 #ifdef PS2_ONLINE
 static void goreHit(Bot *b, float dmg, int head);
+static void bfPt(int kind, float x, float y, float z, float vx, float vy, float vz, float T, float s0, float s1, int r, int g, int b, int a, float grav, float drag);
 static void rdSpawn(int idx, float dmg, int head);
 static void goreReset(void);
 static float rdRay(const float *o, const float *d, float t);
@@ -7310,6 +7327,9 @@ static void spawnBots(void) {
         Bot *b = &bots[i]; memset(b, 0, sizeof(*b));
         { const MapDef *md = &MAPS[curMap]; const SpawnPt *sp = &md->bs[i % md->nb]; int c = navSnap(sp->x, sp->z); navCenter(c, &b->x, &b->z); if (walkClear(sp->x, sp->z, sp->x, sp->z) && !blockedAt(sp->x, sp->z, 0, 0.45f)) { b->x = sp->x; b->z = sp->z; } }
         b->hp = DIFF_HP[S.diff]; b->alive = 1; b->state = BS_PATROL; b->yaw = rndf(0, 6.28f);
+#ifdef PS2_ONLINE
+        b->armor = PLATE_HP * PLATE_N; b->plates = PLATE_STOCK;
+#endif
         b->strafe = (rand() & 1) ? 1 : -1; b->strafeT = 1; b->fireCD = 0.5f;
         freeSpot(-HALF + 2, HALF - 2, &b->wx, &b->wz); b->pn = 0;
     }
@@ -7319,7 +7339,8 @@ static void resetAmmo(void) {
     wsel = 0; wCD = wReload = wSwap = wKick = wFlash = 0; firedLatch = 0;
 #ifdef PS2_ONLINE
     bfAds = bfBloom = bfShake = bfSprA = bfNadeT = 0; bfStam = 1; bfSprint = bfStamLock = bfNadePend = 0; bfNadeSt = 0; bfNadeU = bfThrowT = 0; bfNades = netMode ? 0 : 2; bfSmokes = netMode ? 0 : 2; bfNadeKind = 0;
-    bfArmor = 0; bfPlateU = 0; bfPlateSt = 0; bfPlates = PLATE_STOCK; bfSprintTog = 0; bfPlateChain = bfPlateSnd = 0; bfPlateCloseT = 0;
+    bfLean = bfLeanFrac = bfRest = 0; bfLeanOffX = bfLeanOffZ = 0;
+    bfArmor = PLATE_HP * PLATE_N; bfPlateU = 0; bfPlateSt = 0; bfPlates = PLATE_STOCK; bfSprintTog = 0; bfPlateChain = bfPlateSnd = 0; bfPlateCloseT = 0;
     memset(bfSpot, 0, sizeof bfSpot); memset(bfDT, 0, sizeof bfDT); memset(nades, 0, sizeof nades); memset(booms, 0, sizeof booms); memset(smokes, 0, sizeof smokes); memset(smokeHoles, 0, sizeof smokeHoles); memset(pts, 0, sizeof pts); memset(trcs, 0, sizeof trcs); memset(cass, 0, sizeof cass); memset(scr, 0, sizeof scr); bfFlashT = 0; goreReset();
 #endif
 }
@@ -7376,11 +7397,22 @@ static void damageBot(Bot *b, float dmg, int head) {
 #ifdef PC_ONLINE
     if (b->remote) { mpSendHit(dmg, head); return; }      /* el dano al otro jugador lo aplica el otro jugador */
 #endif
+#ifdef PS2_ONLINE
+    int absorbed = 0;
+    if (b->plating) { b->plating = 0; b->plateT = 0; }          /* si le disparan mientras se pone una placa, la suelta */
+    if (b->armor > 0 && (BOT_ARMOR_HEAD || !head)) {            /* el blindaje absorbe el dano antes que la vida */
+        float had = b->armor, ab = fminf(b->armor, dmg); b->armor -= ab; dmg -= ab; absorbed = 1;
+        if (b->armor <= 0.001f) { b->armor = 0; snd_play3d(SND_ARMORBREAK, b->x, b->z, 1.0f); }     /* se le rompio todo el blindaje */
+        else snd_play3d(SND_HEAD, b->x, b->z, 0.5f);
+        (void)had;
+        for (int i = 0; i < 3; i++) bfPt(1, b->x, b->py + 1.15f - 0.4f * b->rg.crouch, b->z, rndf(-3, 3), rndf(1, 4), rndf(-3, 3), rndf(0.25f, 0.45f), 0.03f, 0.03f, 255, 214, 120, 255, 14, 0.5f);   /* chispas en la placa */
+    }
+#endif
     b->hp -= dmg;
     if (b->state == BS_PATROL || b->state == BS_SEARCH) { b->state = BS_ALERT; b->react = DIFF_REACT[S.diff] * 0.5f; b->lkx = P.x; b->lkz = P.z; }
     b->hitT = 2.0f;
 #ifdef PS2_ONLINE
-    goreHit(b, dmg, head);
+    if (!absorbed || dmg > 0) goreHit(b, dmg, head);           /* sangre solo si el dano llego a la carne */
 #endif
     if (b->hp <= 0) {
         b->rg.deadKind = deadPick(b, head ? 0 : rand() % 3);
@@ -7439,18 +7471,18 @@ static void fireWeapon(void) {
     if (!P.alive || wCD > 0 || wReload > 0 || wSwap > 0) return;
     if (ammoMag[wsel] <= 0) { snd_play(SND_EMPTY, 0.8f); wCD = 0.25f; if (ammoRes[wsel] > 0) startReload(); return; }
     if (wsel == 1 || wsel == 3) snd_burst_shot(1.35f); else snd_play(SND_PISTOL + (wsel == 3 ? 1 : wsel), 1.0f);      /* rifle y ametralladora: rafaga grabada en bucle */
-    ammoMag[wsel]--; pFired = 1; if (netMode) mpShots++; wCD = 60.0f / w->rpm; wKick = 1; wFlash = 0.05f; P.noise = 1; firedLatch = 1;
+    ammoMag[wsel]--; pFired = 1; if (netMode) mpShots++; wCD = 60.0f / w->rpm; wKick = 1.0f - 0.4f * bfRest; wFlash = 0.05f; P.noise = 1; firedLatch = 1;
     float spd = sqrtf(P.vx * P.vx + P.vz * P.vz);
     float spread = w->spread * (1 + clampf(spd / 5, 0, 1) * 2.2f + (P.ground ? 0 : 3));
 #ifdef PS2_ONLINE
-    spread *= (1 - 0.6f * bfAds) * (1 + bfBloom);          /* apuntando se cierra; disparar seguido la abre (se recupera al soltar) */
-    bfBloom = fminf(bfBloom + (w->pellets > 1 ? 0.10f : (w->autof ? 0.14f : 0.30f)), 1.3f);
+    spread *= (1 - 0.6f * bfAds) * (1 + bfBloom) * (1 - 0.45f * bfRest);      /* apoyada en una pared: mas precisa */          /* apuntando se cierra; disparar seguido la abre (se recupera al soltar) */
+    bfBloom = fminf(bfBloom + (w->pellets > 1 ? 0.10f : (w->autof ? 0.14f : 0.30f)) * (1 - 0.5f * bfRest), 1.3f);
 #endif
     float cp = cosf(P.pitch), sp = sinf(P.pitch);
     float f[3] = { -sinf(P.yaw) * cp, sp, -cosf(P.yaw) * cp };
     float r[3] = { cosf(P.yaw), 0, -sinf(P.yaw) };
     float u[3] = { r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0] };
-    float o[3] = { P.x, P.y + 1.62f - 0.5f * P.cr, P.z };
+    float o[3] = { P.x + bfLeanOffX, P.y + 1.62f - 0.5f * P.cr, P.z + bfLeanOffZ };
     if (S.cam) {   /* tercera persona: el rayo sale de la camara, a la altura del personaje, y pasa por la mira */
         float c[3]; tpsCamera(&c[0], &c[1], &c[2]);
         float k = (o[0] - c[0]) * f[0] + (o[1] - c[1]) * f[1] + (o[2] - c[2]) * f[2]; if (k < 0) k = 0;
@@ -7529,7 +7561,7 @@ static void bfCasing(void) {
 }
 static void bfFireFx(const float *o, const float *d, float tEnd, int hitBot) {   /* trazadora, destello y vaina del disparo del jugador */
     float cp = cosf(P.pitch), sp = sinf(P.pitch), f[3] = { -sinf(P.yaw) * cp, sp, -cosf(P.yaw) * cp }, r[3] = { cosf(P.yaw), 0, -sinf(P.yaw) };
-    float m[3] = { P.x + f[0] * 0.9f + r[0] * 0.14f, P.y + 1.55f - 0.5f * P.cr - 0.13f + f[1] * 0.9f, P.z + f[2] * 0.9f + r[2] * 0.14f };
+    float m[3] = { P.x + bfLeanOffX + f[0] * 0.9f + r[0] * 0.14f, P.y + 1.55f - 0.5f * P.cr - 0.13f + f[1] * 0.9f, P.z + bfLeanOffZ + f[2] * 0.9f + r[2] * 0.14f };
     if (W[wsel].autof ? (++bfShotN % 2 == 0) : 1) { float e = tEnd > 60 ? 60 : tEnd; bfTracer(m[0], m[1], m[2], o[0] + d[0] * e, o[1] + d[1] * e, o[2] + d[2] * e); }
     bfPt(3, m[0], m[1], m[2], 0, 0, 0, 0.05f, 0.10f, 0.16f, 255, 225, 150, 230, 0, 0);
     bfPt(0, m[0], m[1], m[2], f[0] * 1.0f, 0.4f, f[2] * 1.0f, 0.7f, 0.04f, 0.22f, 190, 190, 190, 90, -0.3f, 1.5f);
@@ -8173,8 +8205,11 @@ static void bfDrawNades(void) {
         obox(n->x, n->y, n->z, 0.045f, 0.06f, 0.045f, n->t * 9, n->kind ? RGBA(156, 162, 164, 255) : RGBA(58, 70, 44, 255));
         obox(n->x, n->y + 0.07f, n->z, 0.02f, 0.015f, 0.02f, n->t * 9, n->kind ? RGBA(214, 176, 58, 255) : RGBA(120, 124, 120, 255));
     }
-    bfDrawFx();
+    /* La nube va ANTES que las particulas: los triangulos con alfa tambien escriben profundidad, asi que si el humo del arma (o polvo,
+     * chispas, trazadoras) se dibujaba primero, su cuadrado tapaba la nube por detras y quedaba un "circulo" sin humo. Asi las particulas
+     * cercanas se mezclan por encima de la nube y las que quedan detras de ella se ocultan, como debe ser. */
     bfDrawSmoke();
+    bfDrawFx();
 }
 #endif
 
@@ -8203,6 +8238,9 @@ static void labSpawn(void) {
     Bot *b = &bots[idx]; memset(b, 0, sizeof *b);
     b->x = px; b->z = pz; b->yaw = atan2f(-(P.x - px), -(P.z - pz)); b->hp = DIFF_HP[S.diff]; b->alive = 1; b->dummy = 1; b->state = BS_PATROL;
 #ifdef PS2_ONLINE
+    b->armor = PLATE_HP * PLATE_N;      /* los soldados del campo de pruebas tambien llevan las 3 placas (no se ponen mas: estan quietos) */
+#endif
+#ifdef PS2_ONLINE
     memset(&rds[idx], 0, sizeof rds[idx]); bfSpot[idx] = 0;
 #endif
     snd_play(SND_TICK, 0.8f);
@@ -8213,7 +8251,7 @@ static void labStart(void) {
     memset(feed, 0, sizeof(feed)); memset(feedT, 0, sizeof(feedT));
     memset(&P, 0, sizeof(P)); memset(&pRig, 0, sizeof(pRig)); spawnPlayer(); P.hp = 100; P.alive = 1; P.ground = 1;
     resetAmmo(); labClear(); freeze = 0.3f; afterT = 0; mode = M_PLAYING; hurtT = 0;
-    setBanner("CAMPO DE PRUEBAS", "ARRIBA: SOLDADO   ABAJO: BORRAR", 3.0f);
+    setBanner("CAMPO DE PRUEBAS", LAB_BANNER, 3.0f);
     labSpawn();
 }
 static void labSet(int i, int dir) {
@@ -8229,7 +8267,7 @@ static void botShoot(Bot *b, float dist) {
 #endif
     float o[3] = { b->x - sinf(b->yaw) * 0.6f, 1.35f, b->z - cosf(b->yaw) * 0.6f };
     float k = DIFF_AIM[S.diff];
-    float t[3] = { P.x + rndf(-1, 1) * k * (1 + dist * .35f), P.y + 1.15f - 0.42f * P.cr + rndf(-1, 1) * k * (1 + dist * .3f), P.z + rndf(-1, 1) * k * (1 + dist * .35f) };
+    float t[3] = { P.x + bfLeanOffX + rndf(-1, 1) * k * (1 + dist * .35f), P.y + 1.15f - 0.42f * P.cr + rndf(-1, 1) * k * (1 + dist * .3f), P.z + bfLeanOffZ + rndf(-1, 1) * k * (1 + dist * .35f) };
     float d[3] = { t[0] - o[0], t[1] - o[1], t[2] - o[2] };
     float L = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]); d[0] /= L; d[1] /= L; d[2] /= L;
     float wd = wallDist(o, d, 80);
@@ -8238,7 +8276,7 @@ static void botShoot(Bot *b, float dist) {
       bfPt(3, o[0], o[1], o[2], 0, 0, 0, 0.05f, 0.09f, 0.15f, 255, 225, 150, 220, 0, 0);
       if (wd < 79) bfImpact(o, d, wd); }
 #endif
-    float mn[3] = { P.x - .3f, P.y, P.z - .3f }, mx[3] = { P.x + .3f, P.y + 1.75f - 0.6f * P.cr, P.z + .3f };
+    float mn[3] = { P.x + bfLeanOffX - .3f, P.y, P.z + bfLeanOffZ - .3f }, mx[3] = { P.x + bfLeanOffX + .3f, P.y + 1.75f - 0.6f * P.cr, P.z + bfLeanOffZ + .3f };
     if (rayBox(o, d, mn, mx) < wd) {
 #ifdef PS2_ONLINE
         bfHurtFrom(b->x, b->z);
@@ -8499,7 +8537,7 @@ static int botFindCover(const Bot *b, float *ox, float *oz) {
     return found;
 }
 static void updateBots(float dt, int active) {
-    int di = S.diff; float ex = P.x, ey = P.y + 1.37f - 0.45f * P.cr, ez = P.z;
+    int di = S.diff; float ex = P.x + bfLeanOffX, ey = P.y + 1.37f - 0.45f * P.cr, ez = P.z + bfLeanOffZ;
     for (int i = 0; i < nbots; i++) {
         Bot *b = &bots[i];
         if (!b->alive) { b->dead += dt; continue; }
@@ -8507,6 +8545,9 @@ static void updateBots(float dt, int active) {
         if (b->dummy) { b->state = BS_PATROL; b->crWant = 0; if (b->hitT > 0) b->hitT -= dt; continue; }   /* modo secreto: se quedan quietos */
         if (b->hitT > 0) b->hitT -= dt;
         if (b->coverT > 0) b->coverT -= dt;
+#ifdef PS2_ONLINE
+        if (b->state != BS_HIDE) { b->plating = 0; b->plateT = 0; }      /* solo se pone placas agachado en cobertura */
+#endif
         float dx = P.x - b->x, dz = P.z - b->z, dist = sqrtf(dx * dx + dz * dz);
         float toYaw = atan2f(-dx, -dz), dyaw = toYaw - b->yaw;
         dyaw = atan2f(sinf(dyaw), cosf(dyaw));
@@ -8537,8 +8578,20 @@ static void updateBots(float dt, int active) {
             if (L < 0.6f || b->timer > 7) { b->state = BS_HIDE; b->timer = rndf(1.2f, 2.6f); }
             else { navSteer(b, b->coverX, b->coverZ, dt, &mx, &mz); speed = DIFF_SPEED[di] * 1.25f; face = atan2f(-mx, -mz); }
         } else if (b->state == BS_HIDE) {           /* agachado detras de la cobertura */
-            face = toYaw; b->crWant = 1; b->timer -= dt;
-            if (b->timer <= 0 || (b->hitT > 0 && b->timer < 1.0f)) { b->state = BS_PEEK; b->peekT = rndf(1.6f, 3.0f); b->burst = 2 + rand() % 3; b->cov = rand() % 2; b->fireCD = 0.2f; }
+            face = toYaw; b->crWant = 1;
+#ifdef PS2_ONLINE
+            /* detras de la cobertura se pone placas una tras otra hasta llenar el chaleco o quedarse sin repuestos; si le disparan, para */
+            if (!b->plating && b->plates > 0 && b->armor < PLATE_HP * PLATE_N - 0.01f && b->hitT <= 0) { b->plating = 1; b->plateT = 0; snd_play3d(SND_TICK, b->x, b->z, 0.7f); }
+            if (b->plating) {
+                b->plateT += dt;
+                if (b->plateT >= BOT_PLATE_T) {
+                    b->armor = fminf(PLATE_HP * PLATE_N, b->armor + PLATE_HP); b->plates--; b->plateT = 0; snd_play3d(SND_BOUNCE, b->x, b->z, 0.8f);
+                    if (b->plates <= 0 || b->armor >= PLATE_HP * PLATE_N - 0.01f) { b->plating = 0; b->timer = rndf(0.5f, 1.2f); }
+                }
+            } else
+#endif
+            b->timer -= dt;
+            if (!b->plating && (b->timer <= 0 || (b->hitT > 0 && b->timer < 1.0f))) { b->state = BS_PEEK; b->peekT = rndf(1.6f, 3.0f); b->burst = 2 + rand() % 3; b->cov = rand() % 2; b->fireCD = 0.2f; }
         } else if (b->state == BS_PEEK) {           /* asoma: apunta y dispara agachado o de pie */
             face = toYaw; b->crWant = b->cov; b->peekT -= dt; b->fireCD -= dt;
             if (sees && b->fireCD <= 0 && fabsf(dyaw) < 0.5f) { b->fireCD = DIFF_FIRE[di] * rndf(0.9f, 1.3f); botShoot(b, dist); b->fireEv = 1; if (--b->burst <= 0) b->peekT = 0; }
@@ -8546,7 +8599,11 @@ static void updateBots(float dt, int active) {
         } else {
             face = toYaw; b->strafeT -= dt;
             if (b->strafeT <= 0) { b->strafe = -b->strafe; b->strafeT = rndf(0.7f, 1.6f); b->crWant = (rand() % 100) < 25; }
-            if (b->coverT <= 0 && ((b->hitT > 0 && rand() % 100 < 4) || b->hp < DIFF_HP[di] * 0.45f || rand() % 1000 < 4)) {
+            if (b->coverT <= 0 && ((b->hitT > 0 && rand() % 100 < 4) || b->hp < DIFF_HP[di] * 0.45f || rand() % 1000 < 4
+#ifdef PS2_ONLINE
+                                   || (b->plates > 0 && b->armor <= PLATE_HP * (PLATE_N - 1) + 0.01f && b->hitT > 0 && rand() % 100 < 8)      /* le han quitado una placa: se cubre para ponerse otra */
+#endif
+                                   )) {
                 float cx, cz; b->coverT = rndf(5, 9);
                 if (botFindCover(b, &cx, &cz)) { b->coverX = cx; b->coverZ = cz; b->state = BS_COVER; b->timer = 0; b->crWant = 0; }
             }
@@ -8579,14 +8636,25 @@ static void updatePlayer(const Pad *pd, float dt, int canAct) {
 #ifdef PS2_ONLINE
     /* Controles tipo shooter moderno: L3 = correr, R3 = caminar en silencio, O = agacharse/levantarse, L2 = poner placa, L1 = apuntar */
     int walk = (pd->down & B_R3) != 0;
-    if (canAct && P.alive && (pd->pressed & (B_CIRCLE | B_SELECT))) P.crWant = !P.crWant;
+    {   /* O: tocar = agacharse/levantarse, MANTENER = acostarse (si ya estas acostado, tocar o mantener te levanta) */
+        static float circHold = 0; static int circLong = 0, circPrev = 0; int cd = canAct && P.alive && (pd->down & B_CIRCLE) != 0;
+        if (cd) {
+            circHold += dt;
+            if (circHold >= 0.35f && !circLong) { circLong = 1; if (P.prone) { P.prone = 0; P.crWant = 0; } else { P.prone = 1; P.crWant = 1; } }
+        } else {
+            if (circPrev && !circLong && canAct && P.alive) { if (P.prone) { P.prone = 0; P.crWant = 0; } else P.crWant = !P.crWant; }       /* toque corto, al soltar */
+            circHold = 0; circLong = 0;
+        }
+        circPrev = cd;
+        if (canAct && P.alive && (pd->pressed & B_SELECT)) { if (P.prone) { P.prone = 0; P.crWant = 0; } else P.crWant = !P.crWant; }
+    }
 #else
     int walk = (pd->down & B_CIRCLE) != 0;
     if (canAct && P.alive && (pd->pressed & (B_L3 | B_SELECT))) P.crWant = !P.crWant;      /* agacharse / levantarse */
 #endif
-    if (!P.alive) P.crWant = 0;
-    P.cr = lerpf(P.cr, P.crWant ? 1.0f : 0.0f, clampf(dt * 9, 0, 1));
-    float sp = (walk ? 2.6f : 5.4f) * lerpf(1.0f, 0.5f, P.cr);
+    if (!P.alive) { P.crWant = 0; P.prone = 0; }
+    P.cr = lerpf(P.cr, P.prone ? PRONE_CR : (P.crWant ? 1.0f : 0.0f), clampf(dt * (P.prone ? 6.0f : 9.0f), 0, 1));
+    float sp = (walk ? 2.6f : 5.4f) * lerpf(1.0f, 0.5f, fminf(P.cr, 1.0f)) * lerpf(1.0f, 0.45f, clampf((P.cr - 1.0f) / (PRONE_CR - 1.0f), 0, 1));      /* agachado a la mitad, acostado se arrastra */
 #ifdef PS2_ONLINE
     {
         /* L3 (clic): empieza a correr y sigue corriendo mientras empujes la palanca hacia delante; apuntar, disparar, agacharse o soltar la palanca lo corta */
@@ -8611,7 +8679,7 @@ static void updatePlayer(const Pad *pd, float dt, int canAct) {
     float tvx = (fx * iz + rx * ix) * sp, tvz = (fz * iz + rz * ix) * sp;
     float k = (P.ground ? 14.0f : 2.5f) * dt; if (k > 1) k = 1;
     P.vx = lerpf(P.vx, tvx, k); P.vz = lerpf(P.vz, tvz, k);
-    if (canAct && P.alive && (pd->pressed & B_CROSS) && P.ground) { if (P.crWant) P.crWant = 0; else { P.vy = 6.6f; P.ground = 0; } }
+    if (canAct && P.alive && (pd->pressed & B_CROSS) && P.ground) { if (P.crWant) { P.crWant = 0; P.prone = 0; } else { P.vy = 6.6f; P.ground = 0; } }
     moveBody(&P.x, &P.z, P.y, P.vx * dt, P.vz * dt, 0.38f, NULL);
     P.vy -= 20 * dt; P.y += P.vy * dt;
     float g = groundAt(P.x, P.z, P.y, 0.38f);
@@ -8634,6 +8702,27 @@ static void updatePlayer(const Pad *pd, float dt, int canAct) {
         P.pitch -= ly * sens * 1.8f * dt * (S.invertY ? -1 : 1);
     }
     P.pitch = clampf(P.pitch, -1.45f, 1.45f);
+#ifdef PS2_ONLINE
+    {   /* ASOMARSE: con L1 mantenido, cruceta izquierda/derecha. Se limita para no meter la camara en una pared. */
+        int ld = 0;
+        if (canAct && P.alive && !S.cam && (pd->down & B_L1) && !bfSprint && !bfPlateSt) ld = ((pd->down & B_RIGHT) ? 1 : 0) - ((pd->down & B_LEFT) ? 1 : 0);
+        bfLean = lerpf(bfLean, (float)ld, clampf(dt * 10, 0, 1));
+        float rx = cosf(P.yaw), rz = -sinf(P.yaw), sg = bfLean >= 0 ? 1.0f : -1.0f, eh = P.y + 1.62f - 0.5f * P.cr;
+        float o[3] = { P.x, eh, P.z }, dd[3] = { rx * sg, 0, rz * sg };
+        float room = fabsf(bfLean) > 0.01f ? wallDist(o, dd, LEAN_D + 0.3f) - 0.28f : LEAN_D;      /* sitio libre hacia ese lado */
+        float off = fabsf(bfLean) * fminf(LEAN_D, fmaxf(room, 0.0f));
+        bfLeanOffX = rx * off * sg; bfLeanOffZ = rz * off * sg; bfLeanFrac = off * sg / LEAN_D;
+    }
+    {   /* APOYAR EL ARMA: apuntando junto a una pared o esquina el arma descansa en ella (menos dispersion y retroceso) */
+        int want = 0;
+        if (canAct && P.alive && !S.cam && bfAds > 0.5f && !bfSprint) {
+            static const float ang[5] = { 0.0f, 0.7854f, -0.7854f, 1.5708f, -1.5708f }, lim[5] = { 0.75f, 0.85f, 0.85f, 0.65f, 0.65f };      /* delante, diagonales y lados */
+            float o[3] = { P.x, P.y + 1.45f - 0.5f * P.cr, P.z };
+            for (int i = 0; i < 5 && !want; i++) { float a = P.yaw + ang[i], d[3] = { -sinf(a), 0, -cosf(a) }; if (wallDist(o, d, lim[i]) < lim[i] - 0.001f) want = 1; }
+        }
+        bfRest = lerpf(bfRest, (float)want, clampf(dt * 8, 0, 1));
+    }
+#endif
 }
 
 static void updateWeapon(const Pad *pd, float dt, int canAct) {
@@ -8675,12 +8764,16 @@ static void updateWeapon(const Pad *pd, float dt, int canAct) {
     if (trig && (W[wsel].autof || !firedLatch)) fireWeapon();
     if (!bfNadePend) {
         if (pd->pressed & B_SQUARE) startReload();
-        if (pd->pressed & (B_TRIANGLE | B_RIGHT)) switchTo(wsel + 1);
-        if (pd->pressed & B_LEFT) switchTo(wsel - 1);
+        int dpadSw = B_LEFT | B_RIGHT;
+#ifdef PS2_ONLINE
+        if (pd->down & B_L1) dpadSw = 0;           /* con L1 la cruceta izq/der es para asomarse */
+#endif
+        if (pd->pressed & (B_TRIANGLE | (dpadSw & B_RIGHT))) switchTo(wsel + 1);
+        if (pd->pressed & (dpadSw & B_LEFT)) switchTo(wsel - 1);
     }
     /* Granada: R2 la saca y le quita el seguro; mientras sigas apretando R2 la mantienes lista; al soltar R2 la lanzas.
      * Si sueltas antes de quitar el seguro, la guarda. */
-    if (bfNadeSt == 0 && !bfNadePend && !netMode && (pd->pressed & B_UP) && !(sandbox && !(pd->down & B_L1))) { bfNadeKind ^= 1; snd_play(SND_TICK, 0.7f); }      /* cruceta arriba: granada de fragmentacion <-> de humo (en el campo de pruebas, con L1: arriba pone soldados) */
+    if (bfNadeSt == 0 && !bfNadePend && !netMode && (pd->pressed & B_UP)) { bfNadeKind ^= 1; snd_play(SND_TICK, 0.7f); }      /* cruceta arriba: granada de fragmentacion <-> de humo (tambien en el campo de pruebas) */
     if (bfNadeSt == 0) {
         if ((pd->pressed & B_R2) && (bfNadeKind ? bfSmokes : bfNades) > 0 && wSwap <= 0 && wReload <= 0 && !netMode && !bfSprint) { bfNadeSt = 1; bfNadeU = 0; bfNadePend = 1; }
     } else if (bfNadeSt == 1) {
@@ -9072,6 +9165,14 @@ static void drawBots(void) {
 #endif
         if (ocHidden(b->x - 0.7f, b->py, b->z - 0.7f, b->x + 0.7f, b->py + 2.0f, b->z + 0.7f)) continue;
         drawRig(botModel(i), &b->rg, b->rg.dead ? 0.0f : b->pitch, b->rl ? clampf(b->rlT / 1.7f, 0, 1) : -1.0f, 1, b->x, b->py, b->z, b->yaw, 1, 1, 1, 0);
+#ifdef PS2_ONLINE
+        if (b->plating) {      /* placa en las manos: sube desde la cadera, se muestra y baja al chaleco */
+            float u = clampf(b->plateT / BOT_PLATE_T, 0, 1), s = sinf(b->yaw), c = cosf(b->yaw), cq = b->rg.crouch;
+            float up = sstep(0.0f, 0.4f, u) * (1 - 0.55f * sstep(0.6f, 0.9f, u)), fw = 0.30f - 0.14f * sstep(0.6f, 0.9f, u);
+            float hy = b->py + (0.55f + 0.42f * up) - 0.3f * cq;
+            if (u < 0.92f) obox(b->x - s * fw, hy, b->z - c * fw, 0.10f, 0.12f, 0.016f, b->yaw, RGBA(46, 54, 64, 255));
+        }
+#endif
     }
 }
 
@@ -9528,9 +9629,10 @@ static void drawCross(void) {
     float cx = SW * 0.5f, cy = SH * 0.5f, t = SH / 448.0f, len = 7 * t, gap = 5 * t, th = 1.2f * t;
     u32c c = CROSS_COL[S.cross];
 #ifdef PS2_ONLINE
+    if (bfRest > 0.5f) drawTextC(SW * 0.5f, SH * 0.5f + 16 * t, t * 0.6f, "APOYADO", RGBA(150, 196, 232, 210));
     {   /* la mira se abre con el movimiento y los disparos seguidos (refleja la dispersion real); apuntando queda solo un punto */
         float spd = sqrtf(P.vx * P.vx + P.vz * P.vz);
-        float sprd = W[wsel].spread * (1 + clampf(spd / 5, 0, 1) * 2.2f + (P.ground ? 0 : 3)) * (1 - 0.6f * bfAds) * (1 + bfBloom);
+        float sprd = W[wsel].spread * (1 + clampf(spd / 5, 0, 1) * 2.2f + (P.ground ? 0 : 3)) * (1 - 0.6f * bfAds) * (1 + bfBloom) * (1 - 0.45f * bfRest);
         gap = fminf(3 * t + sprd * camF, 34 * t); len = 5 * t;
         if (bfAds > 0.6f) { gfx_rect(cx - 2.6f * t, cy - 2.6f * t, cx + 2.6f * t, cy + 2.6f * t, RGBA(0, 0, 0, 150)); gfx_rect(cx - 1.5f * t, cy - 1.5f * t, cx + 1.5f * t, cy + 1.5f * t, c); goto bf_hit; }
     }
@@ -9610,7 +9712,7 @@ static void drawHud(void) {
     if (sandbox) {
         drawTextC(SW * 0.5f, my * 0.7f, t * 1.0f, "CAMPO DE PRUEBAS", RGBA(224, 128, 58, 255));
         snprintf(buf, 64, "SOLDADOS %d   BAJAS %d", aliveBots(), kills); drawTextC(SW * 0.5f, my * 0.7f + 10 * t, t * 0.8f, buf, RGBA(143, 160, 166, 255));
-        drawTextC(SW * 0.5f, my * 0.7f + 19 * t, t * 0.65f, "ARRIBA: SOLDADO   ABAJO: BORRAR", RGBA(143, 160, 166, 255));
+        drawTextC(SW * 0.5f, my * 0.7f + 19 * t, t * 0.65f, LAB_HINT, RGBA(143, 160, 166, 255));
     } else {
     snprintf(buf, 64, "RONDA %d", roundNo); drawTextC(SW * 0.5f, my * 0.7f, t * 1.0f, buf, RGBA(232, 236, 233, 255));
     snprintf(buf, 64, "TU %d - %d BOTS", scoreMe, scoreBots); drawTextC(SW * 0.5f, my * 0.7f + 10 * t, t * 0.9f, buf, RGBA(91, 180, 214, 255));
@@ -9851,8 +9953,13 @@ void game_frame(const Pad *pd, float dt) {
         snd_listener(P.x, P.z, P.yaw);
         updateWeapon(gp, dt, canAct);
         if (sandbox) {
+#ifdef PS2_ONLINE
+            if (canAct && (pd->pressed & B_DOWN) && !(pd->down & B_L1)) labSpawn();
+            if (canAct && (pd->pressed & B_DOWN) && (pd->down & B_L1)) { labClear(); snd_play(SND_TICK, 0.8f); }
+#else
             if (canAct && (pd->pressed & B_UP) && !(pd->down & B_L1)) labSpawn();
             if (canAct && (pd->pressed & B_DOWN)) { labClear(); snd_play(SND_TICK, 0.8f); }
+#endif
             for (int i = 0; i < 4; i++) ammoRes[i] = W[i].reserve;
 #ifdef PS2_ONLINE
             bfNades = bfSmokes = 9; bfPlates = 9;
@@ -10068,8 +10175,9 @@ void game_frame(const Pad *pd, float dt) {
 #endif
         }
         if (S.cam) { float cx, cy, cz; tpsCamera(&cx, &cy, &cz); setCamera(cx, cy, cz, P.yaw, P.pitch); }
-        else setCamera(P.x, P.y + 1.62f - 0.5f * P.cr + bob - (P.alive ? 0 : 1.1f), P.z, P.yaw, P.pitch);
+        else setCamera(P.x + bfLeanOffX, P.y + 1.62f - 0.5f * P.cr + bob - (P.alive ? 0 : 1.1f), P.z + bfLeanOffZ, P.yaw, P.pitch);
 #ifdef PS2_ONLINE
+        camRoll += bfLeanFrac * LEAN_ROLL;        /* al asomarte la vista se inclina hacia ese lado */
         camPitch -= bfPlateDip(); camRoll += bfPlateDip() * 0.25f;     /* reverencia de la camara al ponerte la placa */
         if (bfShake > 0) { camPitch += sinf(orbit * 0 + P.bob * 0 + bfShake * 61.0f) * 0.035f * bfShake; camYaw += rndf(-1, 1) * 0.03f * bfShake; camRoll += rndf(-1, 1) * 0.02f * bfShake; }
 #endif
@@ -10128,7 +10236,7 @@ void game_frame(const Pad *pd, float dt) {
         const char *it[] = { "CAMPO DE PRUEBAS", "MAPA", "ENEMIGOS (SKIN)", "VOLVER" }, *vals[4] = { NULL, MAPS[S.map].name, SKIN_NAMES[S.skin], NULL };
         drawList(it, vals, 4, SH * 0.30f);
         drawTextC(SW * 0.5f, SH * 0.62f, t * 0.7f, "SOLDADOS QUIETOS: DISPARALES, MIRA SU SKIN, USA GRANADAS", RGBA(143, 160, 166, 255));
-        drawTextC(SW * 0.5f, SH * 0.62f + 9 * t, t * 0.7f, "EN JUEGO: ARRIBA = NUEVO SOLDADO   ABAJO = BORRAR TODOS", RGBA(143, 160, 166, 255));
+        drawTextC(SW * 0.5f, SH * 0.62f + 9 * t, t * 0.7f, LAB_INGAME, RGBA(143, 160, 166, 255));
         drawTextC(SW * 0.5f, SH * 0.92f - 6 * t, t * 0.7f, "IZQ/DER CAMBIAR   X ACEPTAR   O VOLVER", RGBA(143, 160, 166, 255));
     } else if (mode == M_SETTINGS) {
         drawMenuBg(); drawTextC(SW * 0.5f, SH * 0.08f, t * 3.0f, "CONFIGURACION", RGBA(232, 236, 233, 255));
@@ -10151,8 +10259,8 @@ void game_frame(const Pad *pd, float dt) {
         drawList(it, NULL, 3, SH * 0.45f);
 #endif
 #ifdef PS2_ONLINE
-        { const char *h[] = { "R1 DISPARAR  L1 APUNTAR  R2 MANTEN/SOLTAR GRANADA  L2 PONER PLACA", "CUADRADO RECARGAR  X SALTAR  O AGACHARSE  L3 CORRER  R3 CAMINAR SILENCIO", "TRIANGULO O CRUCETA IZQ/DER: CAMBIAR ARMA", "CRUCETA ARRIBA: ELEGIR GRANADA DE FRAGMENTACION O DE HUMO" };
-          for (int i = 0; i < 4; i++) drawTextC(SW * 0.5f, SH * 0.80f + i * 8 * t, t * 0.65f, h[i], RGBA(143, 160, 166, 255)); }
+        { const char *h[] = { "R1 DISPARAR  L1 APUNTAR  R2 MANTEN/SOLTAR GRANADA  L2 PONER PLACA", "CUADRADO RECARGAR  X SALTAR  L3 CORRER  R3 CAMINAR SILENCIO", "O AGACHARSE  O MANTENIDO ACOSTARSE (O O X LEVANTA)", "TRIANGULO O CRUCETA IZQ/DER: ARMA  L1+CRUCETA IZQ/DER: ASOMARSE", "CRUCETA ARRIBA: GRANADA FRAG/HUMO  L1 CERCA DE PARED: APOYAR ARMA" };
+          for (int i = 0; i < 5; i++) drawTextC(SW * 0.5f, SH * 0.80f + i * 8 * t, t * 0.65f, h[i], RGBA(143, 160, 166, 255)); }
 #endif
     } else if (mode == M_END) {
         int won = scoreMe >= ROUNDS(); char b[48];
