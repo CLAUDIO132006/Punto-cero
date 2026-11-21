@@ -6637,6 +6637,14 @@ static const char *DIFF_NAMES[] = { "FACIL", "NORMAL", "DIFICIL" };
 static const float DIFF_HP[] = { 70, 100, 130 }, DIFF_REACT[] = { 0.85f, 0.5f, 0.28f };
 static const float DIFF_AIM[] = { 0.16f, 0.09f, 0.045f }, DIFF_DMG[] = { 6, 9, 12 };
 static const float DIFF_FIRE[] = { 0.55f, 0.38f, 0.26f }, DIFF_SPEED[] = { 3.0f, 3.6f, 4.2f };
+/* Vision de los bots: cono frontal (semiangulo, rad: ~47, 54 y 62 grados segun la dificultad) + vision periferica a corta distancia + presencia pegada a ellos.
+ * Todo exige linea de vista libre (ni paredes ni humo). Sin verte solo te oyen: pista aproximada y mas debil a traves de paredes. */
+static const float DIFF_FOV[] = { 0.82f, 0.95f, 1.08f };
+#define VIS_PERI_R 4.5f      /* hasta esta distancia ven tambien por los lados... */
+#define VIS_PERI_A 1.75f     /* ...hasta este semiangulo (~100 grados) */
+#define VIS_NEAR_R 1.6f      /* a menos de esto te notan aunque estes detras de ellos */
+#define HEAR_R 20.0f         /* alcance del oido con ruido maximo (disparo); correr = 0,6 */
+#define HEAR_WALL 0.5f       /* una pared entre medias reduce el alcance del oido a la mitad */
 static const int ROUND_OPTS[] = { 3, 5, 8, 12 };
 static const char *SKIN_NAMES[] = { "SOLDADOS", "SUPERVIVIENTES", "ZOMBIS", "MIXTO" };
 static const char *CAM_NAMES[] = { "PRIMERA PERSONA", "TERCERA PERSONA" };
@@ -6967,7 +6975,7 @@ static int freeSpot(float zmin, float zmax, float *ox, float *oz) {
 typedef struct { float x, y, z, r, g, b; } V;
 static float camX, camY, camZ, camYaw, camPitch, camF;
 
-static float camRoll = 0, camFovAdd = 0;
+static float camRoll = 0, camRollBase = 0, camFovAdd = 0;      /* camRollBase: inclinacion suavizada al desplazarse; camRoll = base + efectos de cada cuadro (asomarse, placa, sacudida) */
 static float tvYaw = 1e9f, tvPitch = 1e9f, tvRoll = 1e9f, tvCY, tvSY, tvCP, tvSP, tvCR = 1, tvSR;      /* seno/coseno de la camara en cache: solo se recalculan si la camara giro */
 static void toView(float wx, float wy, float wz, float *x, float *y, float *z) {
     if (camYaw != tvYaw || camPitch != tvPitch || camRoll != tvRoll) {
@@ -7235,7 +7243,7 @@ static const Weapon W[4] = {
 enum { M_MENU, M_SETTINGS, M_PLAYING, M_ROUNDEND, M_PAUSE, M_END, M_OPTIONS, M_MP_MENU, M_MP_LOBBY, M_KEYS, M_CODE, M_LAB };
 typedef struct { float x, y, z, vx, vy, vz, yaw, pitch, hp; int alive, ground; float noise, bob, cr; int crWant; int prone; } Player;      /* cr: 0 de pie, 1 agachado, PRONE_CR acostado; prone: esta acostado */
 static Rig pRig; static int pFired;      /* animacion del jugador (tercera persona) */
-typedef struct { float x, z, yaw, hp; int alive, state, burst; float react, fireCD, pause, strafe, strafeT, wx, wz, lkx, lkz, lost, timer, dead, step, walk, mv; int remote, wep, shots; float tx, ty, tz, tyaw, py, pitch; Rig rg; float cr, aimW, hitT, coverX, coverZ, coverT, peekT, px, pz, rlT; int crWant, cov, fireEv, rl; short path[48]; int pn, pi; float pgx, pgz, repT, stuck; int dummy, unused; float armor, plateT; int plates, plating; } Bot;   /* dummy: soldado quieto del modo secreto; unused: ranura libre */
+typedef struct { float x, z, yaw, hp; int alive, state, burst; float react, fireCD, pause, strafe, strafeT, wx, wz, lkx, lkz, lost, timer, dead, step, walk, mv; int remote, wep, shots; float tx, ty, tz, tyaw, py, pitch; Rig rg; float cr, aimW, hitT, coverX, coverZ, coverT, peekT, px, pz, rlT; int crWant, cov, fireEv, rl; short path[48]; int pn, pi; float pgx, pgz, repT, stuck; int dummy, unused; float armor, plateT; int plates, plating; float hearT; } Bot;   /* dummy: soldado quieto del modo secreto; unused: ranura libre */
 
 #define PRONE_CR 2.17f      /* valor de "cr" acostado: la camara queda a ~0,5 m y la caja de impacto a ~0,45 m (las formulas de altura ya usan cr) */
 static Player P;
@@ -7280,9 +7288,10 @@ static int bfNadeSt; static float bfNadeU, bfThrowT;      /* granada: 0 guardada
 #define BOT_ARMOR_HEAD 0    /* 1: el blindaje tambien absorbe los disparos a la cabeza; 0: los disparos a la cabeza lo ignoran */
 #define PLATE_ROLL -0.45f   /* inclinacion de la placa en la mano (si se ve girada al reves, cambia el signo) */
 #define PLATE_SND_U 0.74f   /* a este punto de la animacion suena la placa entrando en el chaleco (el golpe del sonido cae a ~0,9) */
-#define LEAN_ANG 0.42f      /* inclinacion maxima del cuerpo al asomarte, desde la cadera (rad, ~24 grados) */
-#define LEAN_ARM 0.67f      /* distancia de la cadera (el giro) a la cabeza (m): la cabeza se desplaza LEAN_ARM*sen(angulo) y baja LEAN_ARM*(1-cos) */
-#define LEAN_ROLL_K 0.80f   /* cuanto de la inclinacion del cuerpo llega a la camara en primera persona (1 = igual) */
+#define LEAN_ANG 0.30f      /* inclinacion maxima del cuerpo al asomarte, desde la cadera (rad, ~17 grados) */
+#define LEAN_ARM 0.95f      /* distancia de la cadera (el giro) a la cabeza (m): la cabeza se desplaza LEAN_ARM*sen(angulo) y baja LEAN_ARM*(1-cos) */
+#define LEAN_ROLL_K 0.55f   /* cuanto de la inclinacion del cuerpo llega a la camara en primera persona (1 = igual) */
+#define LEAN_RIG 0.42f      /* inclinacion del esqueleto del personaje en tercera persona (rad): sigue siendo ~24 grados aunque la camara gire poco */
 static float bfLean, bfLeanFrac;      /* bfLean: -1 izquierda .. 1 derecha (suave); bfLeanFrac: lo realmente asomado tras limitar por paredes */
 static int bfPlateCont;   /* hay otra placa a continuacion (L2 mantenido): el arma no sube entre una y otra */
 static float bfArmor, bfPlateU, bfPlateCloseT; static int bfPlateSt, bfPlates = PLATE_STOCK, bfSprintTog, bfPlateChain, bfPlateSnd;   /* chain: placas puestas en esta tanda; snd: ya sono la entrada de esta placa */
@@ -8593,8 +8602,26 @@ static void updateBots(float dt, int active) {
         float toYaw = atan2f(-dx, -dz), dyaw = toYaw - b->yaw;
         dyaw = atan2f(sinf(dyaw), cosf(dyaw));
         float from[3] = { b->x, 1.55f, b->z }, to[3] = { ex, ey, ez };
-        int sees = active && P.alive && dist < 48 && fabsf(dyaw) < 1.7f && hasLOS(from, to);
-        if (!sees && active && P.alive && dist < 20 * P.noise) { b->lkx = P.x; b->lkz = P.z; if (b->state == BS_PATROL) b->state = BS_SEARCH; }
+        /* VISION: dentro del cono (o de cerca) y con linea de vista libre. Agachado o acostado se te ve desde menos lejos. */
+        float vrange = 48.0f - 9.0f * clampf(P.cr, 0.0f, 2.0f);
+        int inCone = fabsf(dyaw) < DIFF_FOV[di] || (dist < VIS_PERI_R && fabsf(dyaw) < VIS_PERI_A) || dist < VIS_NEAR_R;
+        int sees = active && P.alive && dist < vrange && inCone && hasLOS(from, to);
+        /* OIDO: sin verte, el ruido les da una pista APROXIMADA (no tu posicion exacta) que se refresca cada 0,7 s; a traves de paredes llega la mitad de lejos */
+        if (!sees && active && P.alive && P.noise > 0.01f && dist < HEAR_R * P.noise) {
+            if (dist < HEAR_R * P.noise * (hasLOS(from, to) ? 1.0f : HEAR_WALL)) {
+                b->hearT -= dt;
+                if (b->hearT <= 0) {
+                    float e = 1.2f + 0.18f * dist; b->hearT = 0.7f;
+                    b->lkx = clampf(P.x + rndf(-e, e), -HALF + 1, HALF - 1); b->lkz = clampf(P.z + rndf(-e, e), -HALF + 1, HALF - 1);
+                    if (b->state == BS_PATROL) { b->state = BS_SEARCH; b->timer = 0; }
+                }
+            }
+        }
+        /* Sin verte, el bot no sabe donde estas: apunta, se acerca o se cubre segun la ULTIMA posicion que vio u oyo (no tu posicion real). */
+        if (!sees && (b->lkx != 0 || b->lkz != 0)) {
+            dx = b->lkx - b->x; dz = b->lkz - b->z; dist = sqrtf(dx * dx + dz * dz);
+            toYaw = atan2f(-dx, -dz); dyaw = toYaw - b->yaw; dyaw = atan2f(sinf(dyaw), cosf(dyaw));
+        }
         if (sees) {
             b->lkx = P.x; b->lkz = P.z; b->lost = 0;
             if (b->state == BS_PATROL || b->state == BS_SEARCH) { b->state = BS_ALERT; b->react = DIFF_REACT[di] * rndf(0.8f, 1.3f); }
@@ -9542,7 +9569,7 @@ static float charAnim(const Pad *pd, float dt) {
 static void drawPlayerChar(void) {
     float ru = wReload > 0 ? clampf(1 - wReload / W[wsel].reload, 0, 1) : -1.0f;
 #ifdef PS2_ONLINE
-    rigLeanAng = bfLeanFrac * LEAN_ANG; rigLeanPivY = P.y + 0.95f - 0.3f * fminf(P.cr, 1.0f);      /* en tercera persona el personaje se inclina de lado */
+    rigLeanAng = bfLeanFrac * LEAN_RIG; rigLeanPivY = P.y + 0.95f - 0.3f * fminf(P.cr, 1.0f);      /* en tercera persona el personaje se inclina de lado */
 #endif
     drawRig(&voxM[0], &pRig, P.pitch, ru, wsel, P.x, P.y, P.z, P.yaw + dbgYaw, 0.85f, 1.0f, 1.3f, wFlash);
     rigLeanAng = 0;
@@ -9726,25 +9753,12 @@ static void handL(float lx, float ly, float lz, const float *anchor, int glove) 
 }
 /* Manos de la VP70 (espacio del arma; empunadura: x +-0,019, y de -0,16 a 0, cara trasera z ~ -0,09, cara delantera de z -0,054 (arriba) a -0,011 (abajo);
  * guardamonte delante, z 0,02..0,14; gatillo z 0,043..0,103). Antes la pistola no llevaba guantes y los antebrazos terminaban en el aire. */
-static void handRPistol(const float *anchor) {      /* derecha: palma por detras y por el lado derecho, tres dedos por delante, indice recto junto al marco y pulgar en el lado izquierdo */
-    u32c GLV = RGBA(52, 54, 58, 255), KNU = RGBA(92, 94, 100, 255), SL = RGBA(176, 152, 110, 255), SP = RGBA(142, 120, 84, 255);
-    static const float FY[3] = { -0.080f, -0.104f, -0.128f }, FZ[3] = { -0.034f, -0.024f, -0.014f };      /* los dedos siguen la inclinacion de la cara delantera */
-    wbox(0.031f, -0.070f, -0.062f, 0.012f, 0.045f, 0.036f, GLV);          /* palma sobre el lado derecho */
-    wbox(0.0f, -0.082f, -0.102f, 0.030f, 0.046f, 0.012f, GLV);            /* detras de la empunadura */
-    wbox(0.0f, -0.020f, -0.100f, 0.028f, 0.016f, 0.014f, GLV);            /* lomo de la mano, justo bajo la corredera */
-    for (int i = 0; i < 3; i++) wbox(0.0f, FY[i], FZ[i], 0.026f, 0.011f, 0.011f, GLV);       /* dedos rodeando la parte delantera */
-    wbox(0.027f, -0.015f, 0.060f, 0.008f, 0.010f, 0.048f, GLV);           /* indice recto junto al marco, fuera del guardamonte */
-    wbox(-0.027f, -0.008f, 0.000f, 0.009f, 0.011f, 0.050f, GLV);          /* pulgar en el lado izquierdo del marco */
-    wbox(0.034f, -0.040f, -0.095f, 0.008f, 0.012f, 0.018f, KNU);          /* nudillos */
+static void handRPistol(const float *anchor) {      /* derecha: solo el antebrazo, que termina detras de la empunadura (sin cubos de dedos ni palma alrededor del VP70) */
+    u32c SL = RGBA(176, 152, 110, 255), SP = RGBA(142, 120, 84, 255);
     float a[3]; wpt(0.040f, -0.098f, -0.118f, a); limb(anchor, a, 0.036f, SL, SP);
 }
-static void handLPistol(float lx, float ly, float lz, const float *anchor) {   /* izquierda de apoyo (se mueve con la mano al recargar): palma en el lado izquierdo, dedos por delante sobre los de la derecha, pulgar junto al marco */
-    u32c GLV = RGBA(52, 54, 58, 255), KNU = RGBA(92, 94, 100, 255), SL = RGBA(176, 152, 110, 255), SP = RGBA(142, 120, 84, 255);
-    static const float DY[3] = { -0.020f, -0.044f, -0.068f }, DZ[3] = { 0.020f, 0.030f, 0.039f };
-    wbox(lx, ly - 0.010f, lz - 0.010f, 0.012f, 0.045f, 0.040f, GLV);      /* palma sobre el lado izquierdo */
-    wbox(lx - 0.004f, ly + 0.030f, lz - 0.045f, 0.010f, 0.012f, 0.010f, KNU);      /* nudillos */
-    for (int i = 0; i < 3; i++) wbox(lx + 0.030f, ly + DY[i], lz + DZ[i], 0.040f, 0.010f, 0.010f, GLV);   /* dedos por delante, encima de los de la derecha */
-    wbox(lx - 0.010f, ly + 0.036f, lz + 0.060f, 0.009f, 0.011f, 0.050f, GLV);     /* pulgar junto al marco */
+static void handLPistol(float lx, float ly, float lz, const float *anchor) {   /* izquierda de apoyo (se mueve con la mano al recargar): solo el antebrazo, sin cubos alrededor del arma */
+    u32c SL = RGBA(176, 152, 110, 255), SP = RGBA(142, 120, 84, 255);
     float a[3]; wpt(lx - 0.045f, ly - 0.035f, lz - 0.075f, a); limb(anchor, a, 0.036f, SP, SL);
 }
 static void magItem(int w, float x, float y, float z) {   /* cargador (o caja) segun el arma */
@@ -9831,7 +9845,7 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
         wbox(0, 0.005f, -0.21f, 0.02f, 0.02f, 0.06f, GM);
         if (magSeated) { wbox(0, -0.1f, 0.03f, 0.05f, 0.05f, 0.07f, GD); wbox(0, -0.052f, 0.03f, 0.046f, 0.004f, 0.066f, GM); wbox(-0.052f, -0.07f, 0.03f, 0.004f, 0.02f, 0.05f, GL); }
     }
-    if (w == 0) handRPistol(AR); else handR(d->grip[0], d->grip[1] + 0.012f, d->grip[2] + 0.004f, AR, 1);      /* pistola: manos propias, medidas sobre el VP70 */
+    if (w == 0) handRPistol(AR); else handR(d->grip[0], d->grip[1] + 0.012f, d->grip[2] + 0.004f, AR, w != 2);      /* escopeta: sin cubos negros junto a la empunadura */      /* pistola: manos propias, medidas sobre el VP70 */
     float lx = lh[0], ly = lh[1], lz = lh[2];
     if (w == 0) handLPistol(lx, ly, lz, AL); else handL(lx, ly, lz, AL, 1);
     if (w != 2) {
@@ -10543,7 +10557,8 @@ void game_frame(const Pad *pd, float dt) {
         float bob = P.ground ? sinf(P.bob * 2) * 0.035f * clampf(sqrtf(P.vx * P.vx + P.vz * P.vz) / 5, 0, 1) : 0;
         { /* sensacion de movimiento: inclinacion lateral al desplazarse y apertura de campo al correr */
             float rs = P.vx * cosf(P.yaw) - P.vz * sinf(P.yaw);
-            camRoll = lerpf(camRoll, clampf(-rs * 0.0055f, -0.03f, 0.03f) * (P.alive ? 1 : 0), clampf(dt * 8, 0, 1));
+            camRollBase = lerpf(camRollBase, clampf(-rs * 0.0055f, -0.03f, 0.03f) * (P.alive ? 1 : 0), clampf(dt * 8, 0, 1));
+            camRoll = camRollBase;      /* los efectos de abajo se suman a la base cada cuadro: antes se sumaban a camRoll y se acumulaban (el giro al asomarse salia ~7 veces mayor) */
 #ifdef PS2_ONLINE
             camFovAdd = lerpf(camFovAdd, (5.0f * anRun * (1 - anAim) + 3.0f * bfSprA) * (P.alive ? 1 : 0) - 16.0f * bfAds, clampf(dt * 9, 0, 1));
 #else
@@ -10557,7 +10572,7 @@ void game_frame(const Pad *pd, float dt) {
         camPitch -= bfPlateDip(); camRoll += bfPlateDip() * 0.25f;     /* reverencia de la camara al ponerte la placa */
         if (bfShake > 0) { camPitch += sinf(orbit * 0 + P.bob * 0 + bfShake * 61.0f) * 0.035f * bfShake; camYaw += rndf(-1, 1) * 0.03f * bfShake; camRoll += rndf(-1, 1) * 0.02f * bfShake; }
 #endif
-    } else { camRoll = 0; camFovAdd = 0; setCamera(cosf(orbit) * 22, 9 + sinf(orbit * 1.7f) * 2, sinf(orbit) * 22, 0, 0); }
+    } else { camRoll = camRollBase = 0; camFovAdd = 0; setCamera(cosf(orbit) * 22, 9 + sinf(orbit * 1.7f) * 2, sinf(orbit) * 22, 0, 0); }
     if (!inGame) { /* camara orbital mirando al centro */
         float dx = -camX, dz = -camZ, dy = 1.5f - camY;
         camYaw = atan2f(dx, -dz) * -1.0f; camYaw = atan2f(-dx, -dz); camPitch = atan2f(dy, sqrtf(dx * dx + dz * dz));
