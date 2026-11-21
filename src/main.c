@@ -7560,7 +7560,7 @@ static int bfProj(float wx, float wy, float wz, float *sx, float *sy, int *zd, f
     *zd = (int)clampf(16777000.0f * 0.1f * iz * 1.03f, 0, 16777000.0f); *pxs = camF * iz; return 1;
 }
 static void bfFan(float cx, float cy, int zd, float rad, int n, u32c cc, u32c ce, float sy) {   /* disco suave: centro opaco, borde transparente */
-    float px[8], py[8]; if (n > 8) n = 8;
+    float px[16], py[16]; if (n > 16) n = 16;
     for (int i = 0; i < n; i++) { float a = i * 6.2832f / n + 0.4f; px[i] = cx + cosf(a) * rad; py[i] = cy + sinf(a) * rad * sy; }
     for (int i = 0; i < n; i++) { int j = (i + 1) % n; gfx_tri(cx, cy, zd, cc, px[i], py[i], zd, ce, px[j], py[j], zd, ce); }
 }
@@ -7988,7 +7988,7 @@ static void bfDrawFx(void) {
         int r = q->r, g = q->gc, b = q->b;
         if (q->kind == 2) { r = (int)lerpf(255, 95, u); g = (int)lerpf(200, 45, u); b = (int)lerpf(90, 28, u); }
         int a = (int)clampf(fade * q->a, 0, 255);
-        bfFan(sx, sy, zd, rad, q->kind == 3 ? 6 : 6, RGBA(r, g, b, a), RGBA(r, g, b, 0), 1.0f);
+        bfFan(sx, sy, zd, rad, rad < 7.0f ? 6 : rad < 22.0f ? 10 : 14, RGBA(r, g, b, a), RGBA(r, g, b, 0), 1.0f);      /* mas lados cuanto mas grande, para que no se vea un hexagono */
     }
 }
 static void bfHurtFrom(float x, float z) {            /* marca de donde vino el disparo: el indicador gira con la camara */
@@ -8141,9 +8141,9 @@ static void bfDrawSmoke(void) {
             float hr = smokeHoleOpen(h); if (hr < 0.02f) continue;
             float mx = (h->a[0] + h->b[0]) * 0.5f - c[0], my = (h->a[1] + h->b[1]) * 0.5f - c[1], mz = (h->a[2] + h->b[2]) * 0.5f - c[2];
             if (mx * mx + my * my + mz * mz > (rad + 0.6f) * (rad + 0.6f)) continue;
-            float ax, ay, bx, by, pa, pb; int za, zb;
-            if (!bfProj(h->a[0], h->a[1], h->a[2], &ax, &ay, &za, &pa) || !bfProj(h->b[0], h->b[1], h->b[2], &bx, &by, &zb, &pb)) continue;
-            SmkHoleS *o = &smk.h[smk.nh++]; o->ax = ax; o->ay = ay; o->bx = bx; o->by = by; o->hp = fmaxf(1.0f, hr * (pa + pb) * 0.5f);
+            float hx, hy, hps; int hz;          /* el hueco es UN punto redondo: el centro del tramo de bala dentro de la nube (asi no se estira en linea al moverte) */
+            if (!bfProj(mx + c[0], my + c[1], mz + c[2], &hx, &hy, &hz, &hps)) continue;
+            SmkHoleS *o = &smk.h[smk.nh++]; o->ax = o->bx = hx; o->ay = o->by = hy; o->hp = fmaxf(1.0f, hr * hps);
         }
         float x0 = smk.cx - smk.R, y0 = smk.cy - smk.R, cs = 2.0f * smk.R / 12.0f;
         for (int j = 0; j < 12; j++) for (int i = 0; i < 12; i++) smkCell(x0 + i * cs, y0 + j * cs, x0 + (i + 1) * cs, y0 + (j + 1) * cs, 0);
