@@ -6423,7 +6423,7 @@ void game_frame(const Pad *p, float dt);
 /* ===== inicio models.h ===== */
 #ifndef MODELS_H
 #define MODELS_H
-typedef struct { int nv, nf; const float *v; const unsigned short *f; const unsigned char *c; const unsigned char *p; const unsigned char *vb; } Model;  /* p: 5 = cara del arma. vb: 3 bytes por vertice = hueso A, hueso B, peso de A (0..255) */
+typedef struct { int nv, nf; const float *v; const unsigned short *f; const unsigned char *c; const unsigned char *p; const unsigned char *vb; const signed char *fa; const float *fp; const unsigned char *fl; } Model;   /* fa/fp/fl (opcionales, solo mallas de cajas rigidas): eje*2+signo y plano de cada cara en el espacio del hueso, y 1 si es un detalle que se omite de lejos */  /* p: 5 = cara del arma. vb: 3 bytes por vertice = hueso A, hueso B, peso de A (0..255) */
 extern const Model model_soldado_tactico, model_superviviente, model_zombi_comun;
 #endif
 
@@ -6908,24 +6908,48 @@ static const MapDef MAPS[NMAPS] = {
 
 /* ===== fin maps.h ===== */
 
+static void gridBuild(void); static int gridOk;
 static void buildWorld(void) {
-    nbox = 0; mapF = 0; nNavLk = 0;
+    nbox = 0; mapF = 0; nNavLk = 0; gridOk = 0;
     MAP_BUILD[curMap]();
+    gridBuild();
     navBuildPending = 1;
 }
 
 #define STEP 0.55f
+/* Rejilla espacial de cajas (celdas de 4 m): groundAt/blockedAt solo revisan las cajas de su celda en vez de todas (la IA de los bots las llama cientos de veces por cuadro).
+ * Cada caja se anota en todas las celdas que toca ensanchada 1,6 m, asi que sirve para radios de cuerpo de hasta 1,6 m. */
+#define GRID_C 4.0f
+#define GRID_N 18
+static short gridS[GRID_N * GRID_N + 1], gridI[8000];
+static int gridCell(float v) { int i = (int)floorf((v + 36.0f) / GRID_C); return i < 0 ? 0 : (i >= GRID_N ? GRID_N - 1 : i); }
+static void gridBuild(void) {
+    static short cnt[GRID_N * GRID_N]; int tot = 0; gridOk = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass == 0) memset(cnt, 0, sizeof cnt);
+        else { gridS[0] = 0; for (int c = 0; c < GRID_N * GRID_N; c++) { gridS[c + 1] = (short)(gridS[c] + cnt[c]); cnt[c] = 0; } }
+        for (int k = 0; k < nbox; k++) {
+            const Box *b = &boxes[k]; int i0 = gridCell(b->x0 - 1.6f), i1 = gridCell(b->x1 + 1.6f), j0 = gridCell(b->z0 - 1.6f), j1 = gridCell(b->z1 + 1.6f);
+            for (int j = j0; j <= j1; j++) for (int i = i0; i <= i1; i++) { int c = j * GRID_N + i; if (pass == 1) gridI[gridS[c] + cnt[c]] = (short)k; cnt[c]++; tot++; }
+        }
+        if (pass == 0 && tot > 8000) return;      /* no cabe: se usa el recorrido completo */
+        tot = 0;
+    }
+    gridOk = 1;
+}
 static float groundAt(float x, float z, float feet, float r) {
     float g = 0;
-    for (int i = 0; i < nbox; i++) {
-        Box *b = &boxes[i];
+    int c0 = gridCell(z) * GRID_N + gridCell(x), n = gridOk ? gridS[c0 + 1] - gridS[c0] : nbox;
+    for (int q = 0; q < n; q++) {
+        Box *b = &boxes[gridOk ? gridI[gridS[c0] + q] : q];
         if (b->top > g && b->top <= feet + STEP && b->bot <= feet + STEP && x > b->x0 - r * .5f && x < b->x1 + r * .5f && z > b->z0 - r * .5f && z < b->z1 + r * .5f) g = b->top;
     }
     return g;
 }
 static int blockedAt(float x, float z, float feet, float r) {
-    for (int i = 0; i < nbox; i++) {
-        Box *b = &boxes[i];
+    int c0 = gridCell(z) * GRID_N + gridCell(x), n = gridOk ? gridS[c0 + 1] - gridS[c0] : nbox;
+    for (int q = 0; q < n; q++) {
+        Box *b = &boxes[gridOk ? gridI[gridS[c0] + q] : q];
         if (b->top > feet + STEP && b->bot < feet + 1.75f && x > b->x0 - r && x < b->x1 + r && z > b->z0 - r && z < b->z1 + r) return 1;
     }
     return 0;
@@ -7332,7 +7356,7 @@ static const Weapon W[4] = {
 enum { M_MENU, M_SETTINGS, M_PLAYING, M_ROUNDEND, M_PAUSE, M_END, M_OPTIONS, M_MP_MENU, M_MP_LOBBY, M_KEYS, M_CODE, M_LAB };
 typedef struct { float x, y, z, vx, vy, vz, yaw, pitch, hp; int alive, ground; float noise, bob, cr; int crWant; int prone; } Player;      /* cr: 0 de pie, 1 agachado, PRONE_CR acostado; prone: esta acostado */
 static Rig pRig; static int pFired;      /* animacion del jugador (tercera persona) */
-typedef struct { float x, z, yaw, hp; int alive, state, burst; float react, fireCD, pause, strafe, strafeT, wx, wz, lkx, lkz, lost, timer, dead, step, walk, mv; int remote, wep, shots; float tx, ty, tz, tyaw, py, pitch; Rig rg; float cr, aimW, hitT, coverX, coverZ, coverT, peekT, px, pz, rlT; int crWant, cov, fireEv, rl; short path[48]; int pn, pi; float pgx, pgz, repT, stuck; int dummy, unused; float armor, plateT; int plates, plating; float hearT; int lkl, wl, pgl; } Bot;   /* lkl/wl/pgl: piso (0/1) de la ultima posicion conocida, del destino de patrulla y del camino; dummy: soldado quieto del modo secreto; unused: ranura libre */
+typedef struct { float x, z, yaw, hp; int alive, state, burst; float react, fireCD, pause, strafe, strafeT, wx, wz, lkx, lkz, lost, timer, dead, step, walk, mv; int remote, wep, shots; float tx, ty, tz, tyaw, py, pitch; Rig rg; float cr, aimW, hitT, coverX, coverZ, coverT, peekT, px, pz, rlT; int crWant, cov, fireEv, rl; short path[48]; int pn, pi; float pgx, pgz, repT, stuck; int dummy, unused; float armor, plateT; int plates, plating; float hearT; int lkl, wl, pgl; float dirT, skipT; int dirOk; } Bot;   /* lkl/wl/pgl: piso (0/1) de la ultima posicion conocida, del destino de patrulla y del camino; dummy: soldado quieto del modo secreto; unused: ranura libre */
 
 #define PRONE_CR 2.17f      /* valor de "cr" acostado: la camara queda a ~0,5 m y la caja de impacto a ~0,45 m (las formulas de altura ya usan cr) */
 static Player P;
@@ -8645,19 +8669,23 @@ static void mpUpdateRemote(float dt) {       /* suaviza al jugador remoto y calc
 static void navSteer(Bot *b, float tx, float tz, int tl, float dt, float *mx, float *mz) {
     float dx = tx - b->x, dz = tz - b->z; int bl = (mapF > 0 && b->py > mapF * 0.5f);
     int climbing = (mapF > 0 && b->py > 0.25f && b->py < mapF - 0.25f);      /* a medio escalon no se replanea: seguiria subiendo o bajando */
-    b->repT -= dt;
-    if (bl == tl && walkClearF(b->x, b->z, tx, tz, b->py)) { float L = sqrtf(dx * dx + dz * dz) + 1e-4f; *mx = dx / L; *mz = dz / L; b->pn = 0; return; }
+    b->repT -= dt; b->dirT -= dt; b->skipT -= dt;
+    if (bl == tl) {      /* atajo directo: la prueba de linea libre (cara) se repite 6 veces por segundo, no cada cuadro */
+        if (b->dirT <= 0) { b->dirOk = walkClearF(b->x, b->z, tx, tz, b->py); b->dirT = 0.15f + (rand() & 63) * 0.001f; }
+        if (b->dirOk) { float L = sqrtf(dx * dx + dz * dz) + 1e-4f; *mx = dx / L; *mz = dz / L; b->pn = 0; return; }
+    } else b->dirOk = 0;
     float gd = (tx - b->pgx) * (tx - b->pgx) + (tz - b->pgz) * (tz - b->pgz);
     if (b->pn <= 0 || b->pi >= b->pn || (!climbing && (gd > 4.0f || b->pgl != tl || b->repT <= 0))) {
         b->pn = navPath(b->x, b->z, bl, tx, tz, tl, b->path, 48); b->pi = 0; b->pgx = tx; b->pgz = tz; b->pgl = tl; b->repT = 2.5f;
         if (b->pn <= 0) { float L = sqrtf(dx * dx + dz * dz) + 1e-4f; *mx = dx / L; *mz = dz / L; return; }
     }
+    int doSkip = !climbing && b->skipT <= 0; if (doSkip) b->skipT = 0.2f;      /* igual: solo 5 veces por segundo y como mucho 10 waypoints hacia adelante */
     for (;;) {   /* salta al waypoint mas lejano con linea libre (solo los de su mismo piso) */
         float wx, wz; int adv = 0;
-        for (int k = b->pn - 1; !climbing && k > b->pi; k--) { if (b->path[k] / NN != bl) continue; navCenter(b->path[k], &wx, &wz); if (walkClearF(b->x, b->z, wx, wz, b->py)) { b->pi = k; adv = 1; break; } }
+        for (int k = (b->pn - 1 < b->pi + 10 ? b->pn - 1 : b->pi + 10); doSkip && k > b->pi; k--) { if (b->path[k] / NN != bl) continue; navCenter(b->path[k], &wx, &wz); if (walkClearF(b->x, b->z, wx, wz, b->py)) { b->pi = k; adv = 1; break; } }
         navCenter(b->path[b->pi], &wx, &wz);
         if ((wx - b->x) * (wx - b->x) + (wz - b->z) * (wz - b->z) < 0.5f && b->pi < b->pn - 1 && b->path[b->pi] / NN == bl) { b->pi++; continue; }
-        (void)adv; float ddx = wx - b->x, ddz = wz - b->z, L = sqrtf(ddx * ddx + ddz * ddz) + 1e-4f; *mx = ddx / L; *mz = ddz / L; break;
+        (void)adv; doSkip = 0; float ddx = wx - b->x, ddz = wz - b->z, L = sqrtf(ddx * ddx + ddz * ddz) + 1e-4f; *mx = ddx / L; *mz = ddz / L; break;
     }
 }
 static int botFindCover(const Bot *b, float *ox, float *oz) {
@@ -9020,7 +9048,8 @@ static const unsigned char VOX_PAL[3][VC_N][3] = {
 static Model voxM[3];
 static float vxV[3][VOX_NB * 24];
 static unsigned short vxF[3][VOX_NB * 24];
-static unsigned char vxC[3][VOX_NB * 18], vxP[3][VOX_NB * 6], vxB[3][VOX_NB * 24];
+static unsigned char vxC[3][VOX_NB * 18], vxP[3][VOX_NB * 6], vxB[3][VOX_NB * 24], vxL[3][VOX_NB * 6];
+static signed char vxFA[3][VOX_NB * 6]; static float vxFP[3][VOX_NB * 6];
 static void voxBuild(void) {
     for (int k = 0; k < 3; k++) {
         int nv = 0, nf = 0;
@@ -9036,10 +9065,12 @@ static void voxBuild(void) {
                 vxF[k][nf * 4] = (unsigned short)(base + FACE[f][0]); vxF[k][nf * 4 + 1] = (unsigned short)(base + FACE[f][3]);
                 vxF[k][nf * 4 + 2] = (unsigned short)(base + FACE[f][2]); vxF[k][nf * 4 + 3] = (unsigned short)(base + FACE[f][1]);
                 for (int j = 0; j < 3; j++) vxC[k][nf * 3 + j] = VOX_PAL[k][x->col][j];
+                { int ax = f >> 1, sg = f & 1; vxFA[k][nf] = (signed char)(ax * 2 + sg); const float lo[3] = { x->x0, x->y0, x->z0 }, hi[3] = { x->x1, x->y1, x->z1 }; vxFP[k][nf] = sg ? hi[ax] : lo[ax]; }     /* FN[f]: caras -x,+x,-y,+y,-z,+z */
+                vxL[k][nf] = (x->col == VC_EYE || x->col == VC_PADS || x->col == VC_GLOVE);      /* detalles pequenos: de lejos no se dibujan */
                 vxP[k][nf] = x->part; nf++;
             }
         }
-        voxM[k].nv = nv; voxM[k].nf = nf; voxM[k].v = vxV[k]; voxM[k].f = vxF[k]; voxM[k].c = vxC[k]; voxM[k].p = vxP[k]; voxM[k].vb = vxB[k];
+        voxM[k].nv = nv; voxM[k].nf = nf; voxM[k].v = vxV[k]; voxM[k].f = vxF[k]; voxM[k].c = vxC[k]; voxM[k].p = vxP[k]; voxM[k].vb = vxB[k]; voxM[k].fa = vxFA[k]; voxM[k].fp = vxFP[k]; voxM[k].fl = vxL[k];
     }
 }
 /* ---------- Pistola HK VP70 de baja poligonizacion ----------
@@ -9509,7 +9540,12 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
             memcpy(q, n, sizeof n);
         }
     }
-    for (int i = 0; i < m->nv && i < 600; i++) {
+    /* Malla de cajas rigidas (los soldados): cada cara se descarta de espaldas con la camara llevada al espacio de su hueso (sin proyectar nada) y solo se
+     * transforman los vertices de las caras que si se ven. De lejos tambien se omiten los detalles pequenos (ojos, rodilleras, guantes). */
+    int fast = m->fa != NULL && m->nv <= 600 && !(g->dead && !rigOverG), farLod = (camX - wx) * (camX - wx) + (camZ - wz) * (camZ - wz) > 26.0f * 26.0f;
+    static unsigned char tvOk[600], clOk[BN_N]; static float cl[BN_N][3];
+    if (fast) { memset(tvOk, 0, (size_t)m->nv); memset(clOk, 0, sizeof clOk); }
+    else for (int i = 0; i < m->nv && i < 600; i++) {
         const float *p = &m->v[i * 3]; const unsigned char *s = &m->vb[i * 3];
         float a[3], b[3], w = s[2] / 255.0f;
         m34Xf(&G[s[0]], p, a);
@@ -9526,6 +9562,21 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
         int part = m->p[f];
         if (part == 5 && (weap == 0 || (weap == 2 && sgNear))) continue;       /* arma del modelo: se sustituye por la pistola VP70 o la escopeta M37 */
         const unsigned short *qd = &m->f[f * 4];
+        if (fast) {
+            if (farLod && m->fl[f]) continue;
+            int bn = m->vb[qd[0] * 3];
+            if (!clOk[bn]) {      /* camara en el espacio del hueso: R^-1 (cam - t) por adjunta */
+                const float *q = G[bn].m, tx = camX - q[3], ty = camY - q[7], tz = camZ - q[11];
+                float c00 = q[5] * q[10] - q[6] * q[9], c01 = q[2] * q[9] - q[1] * q[10], c02 = q[1] * q[6] - q[2] * q[5];
+                float c10 = q[6] * q[8] - q[4] * q[10], c11 = q[0] * q[10] - q[2] * q[8], c12 = q[2] * q[4] - q[0] * q[6];
+                float c20 = q[4] * q[9] - q[5] * q[8], c21 = q[1] * q[8] - q[0] * q[9], c22 = q[0] * q[5] - q[1] * q[4];
+                float det = q[0] * c00 + q[1] * c10 + q[2] * c20, id = fabsf(det) > 1e-9f ? 1.0f / det : 0;
+                cl[bn][0] = (c00 * tx + c01 * ty + c02 * tz) * id; cl[bn][1] = (c10 * tx + c11 * ty + c12 * tz) * id; cl[bn][2] = (c20 * tx + c21 * ty + c22 * tz) * id; clOk[bn] = 1;
+            }
+            int ax = m->fa[f] >> 1, sg = m->fa[f] & 1; float cc = cl[bn][ax], pl = m->fp[f];
+            if (sg ? cc <= pl : cc >= pl) continue;                                       /* la camara queda detras del plano de la cara: no se ve */
+            for (int k = 0; k < 4; k++) { int vi = qd[k]; if (!tvOk[vi]) { m34Xf(&G[bn], &m->v[vi * 3], tv[vi]); tvOk[vi] = 1; } }
+        }
         const float *a = tv[qd[0]], *b = tv[qd[1]], *c2 = tv[qd[2]];
         float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c2[0] - a[0], vy = c2[1] - a[1], vz = c2[2] - a[2];
         float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
@@ -10684,6 +10735,7 @@ void game_frame(const Pad *pd, float dt) {
     drawFloor();
     for (int i = 0; i < nbox; i++) {
         Box *b = &boxes[i];
+        if (!sphereVis((b->x0 + b->x1) * .5f, (b->top + b->bot) * .5f, (b->z0 + b->z1) * .5f, sqrtf((b->x1 - b->x0) * (b->x1 - b->x0) * .25f + (b->top - b->bot) * (b->top - b->bot) * .25f + (b->z1 - b->z0) * (b->z1 - b->z0) * .25f))) continue;      /* fuera de la vista: sin proyectar 8 vertices */
         if (ocHidden(b->x0, b->bot, b->z0, b->x1, b->top, b->z1)) continue;
         obox((b->x0 + b->x1) * .5f, (b->top + b->bot) * .5f, (b->z0 + b->z1) * .5f, (b->x1 - b->x0) * .5f, (b->top - b->bot) * .5f, (b->z1 - b->z0) * .5f, 0, b->col);
     }
