@@ -6449,7 +6449,7 @@ const char *net_last_error(void);                          /* texto del ultimo f
 
 #define PI 3.14159265f
 #define HALF 30.0f
-#define MAXBOX 170
+#define MAXBOX 280
 #define MAXBOT 10
 
 /* Aviso de autoria: tambien queda dentro del ejecutable */
@@ -6652,7 +6652,7 @@ static const char *CROSS_NAMES[] = { "BLANCO", "VERDE", "CIAN", "NARANJA", "ROJO
 static const u32c CROSS_COL[] = { RGBA(255, 255, 255, 255), RGBA(111, 207, 151, 255), RGBA(91, 214, 224, 255), RGBA(224, 128, 58, 255), RGBA(229, 72, 77, 255) };
 
 /* ---------- Mapa ---------- */
-typedef struct { float x0, x1, z0, z1, top, bot; u32c col; } Box;   /* bot = base de la caja (0 = apoyada en el suelo; > 0 = techo/losa flotante, como el piso de arriba de la casa) */
+typedef struct { float x0, x1, z0, z1, top, bot; u32c col; } Box;   /* bot = base de la caja (0 = apoyada en el suelo; > 0 = techo o losa flotante, como el piso de arriba de las oficinas) */
 static Box boxes[MAXBOX];
 static int navBuildPending = 1;
 static int nbox = 0;
@@ -6674,7 +6674,7 @@ static void addBoxY(float x, float z, float w, float d, float bot, float top, u3
 #define MAPS_H
 
 #define NMAPS 9
-typedef struct { float x, z; } SpawnPt;
+typedef struct { float x, z; int up; } SpawnPt;      /* up = 1: aparece en el piso de arriba */
 typedef struct { const char *name; u32c floorA, floorB, sky; int np, nb; SpawnPt ps[4], bs[10]; } MapDef;
 static int curMap = 0;
 
@@ -6815,43 +6815,73 @@ static void mapField(void) {
     B(-24, 18, 5, 0.9f, 0.5f, LOG); B(24, -18, 5, 0.9f, 0.5f, LOG); B(-5, 12.5f, 1.4f, 1.4f, 1.0f, LOG); B(5, -12.5f, 1.4f, 1.4f, 1.0f, LOG);
 }
 
-/* 8: CASA - casa de dos pisos (reconstruccion de la referencia casa_referencia_ps2.obj, escala x1.5 en planta).
- * Primer piso + escalera + segundo piso con huecos/pasillos. Usa cajas con base elevada (bot) para el techo del primer piso. */
-static const float CASA_BOX[][7] = {   /* cx, cz, ancho, fondo, base, techo, material */
-    {0.00f,0.00f,30.00f,21.00f,0.00f,0.03f,0}, {-15.00f,0.00f,0.33f,21.00f,0.00f,2.65f,1}, {15.00f,0.00f,0.33f,21.00f,0.00f,2.65f,1}, {-9.00f,-10.50f,12.00f,0.33f,0.00f,2.65f,1},
-    {7.20f,-10.50f,15.60f,0.33f,0.00f,2.65f,1}, {0.00f,10.50f,30.00f,0.33f,0.00f,2.65f,1}, {-6.90f,-5.48f,0.33f,3.45f,0.00f,2.65f,1}, {-6.90f,4.69f,0.33f,11.62f,0.00f,2.65f,1},
-    {-10.95f,-3.45f,8.10f,0.33f,0.00f,2.65f,1}, {-2.40f,3.45f,9.00f,0.33f,0.00f,2.65f,1}, {2.10f,-0.22f,0.33f,6.45f,0.00f,2.65f,1}, {2.10f,7.88f,0.33f,5.25f,0.00f,2.65f,1},
-    {8.55f,3.45f,12.90f,0.33f,0.00f,2.65f,1}, {-11.10f,-9.22f,5.85f,0.90f,0.00f,0.14f,2}, {-11.14f,-8.66f,5.32f,0.69f,0.00f,0.43f,2}, {-11.14f,-8.01f,5.32f,0.69f,0.00f,0.72f,2},
-    {-11.14f,-7.36f,5.32f,0.69f,0.00f,1.01f,2}, {-11.14f,-6.72f,5.32f,0.69f,0.00f,1.30f,2}, {-11.14f,-6.07f,5.32f,0.69f,0.00f,1.59f,2}, {-11.14f,-5.43f,5.32f,0.69f,0.00f,1.88f,2},
-    {-11.14f,-4.79f,5.32f,0.69f,0.00f,2.17f,2}, {-11.14f,-4.14f,5.32f,0.69f,0.00f,2.46f,2}, {-11.14f,-3.49f,5.32f,0.69f,0.00f,2.75f,2}, {-11.14f,-2.85f,5.32f,0.69f,0.00f,3.04f,2},
-    {-14.00f,-5.70f,0.34f,6.75f,0.00f,3.05f,1}, {-8.30f,-5.70f,0.35f,6.75f,0.00f,3.05f,1}, {-2.25f,-0.30f,7.50f,5.10f,0.00f,0.05f,3}, {9.08f,6.19f,9.15f,0.97f,0.00f,0.90f,4},
-    {5.48f,6.82f,1.95f,0.30f,0.90f,1.70f,6}, {8.10f,6.82f,2.40f,0.30f,0.90f,1.65f,6}, {11.40f,6.82f,3.30f,0.30f,0.90f,1.70f,6}, {13.12f,4.73f,1.65f,1.95f,0.00f,2.00f,6},
-    {8.48f,-0.53f,4.95f,2.85f,0.75f,1.00f,4}, {6.71f,-2.59f,0.83f,0.82f,0.00f,0.72f,4}, {10.61f,-2.59f,0.83f,0.82f,0.00f,0.72f,4}, {6.71f,1.61f,0.83f,0.82f,0.00f,0.72f,4},
-    {10.61f,1.61f,0.83f,0.82f,0.00f,0.72f,4}, {-8.06f,-6.75f,1.27f,1.50f,0.00f,0.85f,4}, {-14.59f,0.00f,0.83f,21.00f,3.20f,3.38f,0}, {3.45f,0.00f,23.10f,21.00f,3.20f,3.38f,0},
-    {-11.14f,-10.09f,6.07f,0.82f,3.20f,3.38f,0}, {-11.14f,4.12f,6.07f,12.75f,3.20f,3.38f,0}, {-15.00f,0.00f,0.33f,21.00f,3.38f,6.03f,1}, {15.00f,0.00f,0.33f,21.00f,3.38f,6.03f,1},
-    {0.00f,-10.50f,30.00f,0.33f,3.38f,6.03f,1}, {0.00f,10.50f,30.00f,0.33f,3.38f,6.03f,1}, {-4.05f,6.00f,0.33f,9.00f,3.38f,6.03f,1}, {0.30f,1.50f,8.70f,0.33f,3.38f,6.03f,1},
-    {-9.53f,3.75f,10.95f,0.33f,3.38f,6.03f,1}, {-3.30f,-1.20f,8.10f,0.33f,3.38f,6.03f,1}, {0.75f,-6.90f,0.33f,7.20f,3.38f,6.03f,1}, {0.75f,1.12f,0.33f,5.25f,3.38f,6.03f,1},
-    {7.88f,3.75f,14.25f,0.33f,3.38f,6.03f,1}, {7.80f,-8.10f,0.33f,4.80f,3.38f,6.03f,1}, {7.80f,-0.22f,0.33f,7.95f,3.38f,6.03f,1}, {9.00f,7.12f,0.33f,6.75f,3.38f,6.03f,1},
-    {12.00f,3.75f,6.00f,0.33f,3.38f,6.03f,1}, {-11.14f,-2.55f,6.07f,0.75f,3.20f,3.38f,2}, {11.93f,4.82f,4.05f,0.64f,3.38f,3.62f,2}, {11.93f,5.42f,4.05f,0.64f,3.38f,3.86f,2},
-    {11.93f,6.02f,4.05f,0.64f,3.38f,4.10f,2}, {11.93f,6.62f,4.05f,0.65f,3.38f,4.34f,2}, {11.93f,7.22f,4.05f,0.64f,3.38f,4.58f,2}, {11.93f,7.82f,4.05f,0.64f,3.38f,4.82f,2},
-    {11.93f,8.42f,4.05f,0.64f,3.38f,5.06f,2}, {11.93f,9.02f,4.05f,0.64f,3.38f,5.30f,2}, {11.93f,9.62f,4.05f,0.65f,3.38f,5.54f,2}, {11.93f,9.94f,4.80f,0.53f,3.38f,5.63f,2},
-    {-1.12f,6.97f,3.15f,4.65f,3.38f,3.68f,4}, {-1.12f,7.50f,2.70f,3.00f,3.68f,3.85f,5}, {1.57f,7.57f,1.35f,1.35f,3.38f,4.05f,4}, {3.23f,7.73f,1.05f,1.05f,3.38f,3.80f,4},
-    {4.20f,-1.05f,2.10f,3.30f,3.38f,3.68f,4}, {9.52f,-2.70f,7.05f,0.90f,3.38f,3.95f,4}, {13.20f,-0.23f,1.20f,5.55f,3.38f,5.10f,6}, {11.33f,-7.05f,4.65f,3.90f,3.38f,3.70f,4},
-    {11.32f,-8.10f,4.05f,1.20f,3.70f,3.92f,5}, {-4.95f,-6.90f,1.50f,1.20f,3.38f,3.95f,4}, {-3.52f,0.97f,4.95f,3.15f,0.00f,3.42f,3}
-};
-static const u32c CASA_COL[7] = { RGBA(116, 82, 54, 255), RGBA(160, 154, 144, 255), RGBA(78, 64, 52, 255), RGBA(136, 44, 40, 255), RGBA(98, 72, 50, 255), RGBA(132, 120, 94, 255), RGBA(120, 124, 118, 255) };
-static void mapCasa(void) {
-    const u32c OUT = RGBA(118, 112, 100, 255), CRATE = RGBA(142, 106, 67, 255), ROCK = RGBA(122, 118, 108, 255), LOGC = RGBA(104, 78, 52, 255);
+static float mapF;      /* altura del piso de arriba (0 = un solo piso); se define con la navegacion */
+static float navLk[4][4]; static int nNavLk;
+/* 8: OFICINAS - edificio de oficinas de dos pisos, todo bajo techo (estilo cs_office): vestibulo central con vacio, pasillo, ocho despachos por piso y dos escaleras.
+ * El piso de arriba esta a OF_F m; los bots suben y bajan por las escaleras (enlaces de navegacion). */
+#define OF_F 3.6f
+static void ofWX(float z, float xa, float xb, float b, float h, u32c c) { addBoxY((xa + xb) * .5f, z, xb - xa, 0.4f, b, b + h, c); }      /* pared a lo largo de X */
+static void ofWZ(float x, float za, float zb, float b, float h, u32c c) { addBoxY(x, (za + zb) * .5f, 0.4f, zb - za, b, b + h, c); }      /* pared a lo largo de Z */
+static void ofRoom(float x0, float x1, float z0, float z1, int north, float b, u32c desk, u32c cab) {   /* escritorio en la pared del fondo, dos archiveros y una mesa */
+    float xc = (x0 + x1) * .5f, zf = north ? z0 : z1, sg = north ? 1.0f : -1.0f, zm = (z0 + z1) * .5f;
+    addBoxY(xc, zf + sg * 0.9f, 4.0f, 1.2f, b, b + 0.8f, desk);
+    addBoxY(x0 + 0.55f, zf + sg * 0.9f, 0.6f, 1.4f, b, b + 1.8f, cab); addBoxY(x1 - 0.55f, zf + sg * 0.9f, 0.6f, 1.4f, b, b + 1.8f, cab);
+    addBoxY(xc, zm, 2.4f, 1.2f, b, b + 0.8f, desk);
+}
+static void ofLevel(float b, float h, u32c w, u32c w2, u32c desk, u32c cab) {
+    static const float sw[3][2] = { { -28, -24 }, { -21.4f, -15 }, { -12.4f, -10 } }, se[3][2] = { { 10, 12.4f }, { 15, 21.4f }, { 24, 28 } };
+    for (int s = 0; s < 3; s++) for (int k = 0; k < 2; k++) { float z = k ? 6.0f : -6.0f; ofWX(z, sw[s][0], sw[s][1], b, h, w); ofWX(z, se[s][0], se[s][1], b, h, w2); }     /* paredes del pasillo (z = -6 y 6), con puerta a cada despacho */
+    for (int sx = -1; sx <= 1; sx += 2) {
+        float x = 19.0f * sx; u32c c = sx < 0 ? w : w2;
+        ofWZ(x, -22, -16, b, h, c); ofWZ(x, -13.4f, -6, b, h, c); ofWZ(x, 6, 13.4f, b, h, c); ofWZ(x, 16, 22, b, h, c);      /* division entre los dos despachos de cada ala (con puerta) */
+        ofWZ(10.0f * sx, -22, -6, b, h, c); ofWZ(10.0f * sx, 6, 22, b, h, c);                                              /* paredes del vestibulo */
+    }
+    for (int k = 0; k < 4; k++) { float xa = (k & 1) ? -19.0f : -28.0f, xb = (k & 1) ? -10.0f : -19.0f; if (k & 2) { xa = -xa; xb = -xb; float t = xa; xa = xb; xb = t; }
+        ofRoom(xa, xb, -22, -6, 1, b, desk, cab); ofRoom(xa, xb, 6, 22, 0, b, desk, cab); }
+}
+static void ofStair(float x0, float x1, float zBot, float dz, u32c c) {      /* 12 escalones de 0,3 m (alto) x 0,6 m (huella); sube hacia dz (+1 sur, -1 norte) */
+    for (int k = 0; k < 12; k++) { float za = zBot + dz * 0.6f * k, zb = za + dz * 0.6f; addBoxY((x0 + x1) * .5f, (za + zb) * .5f, x1 - x0, 0.6f, 0, 0.3f * (k + 1), c); }
+}
+static void mapOffice(void) {
+    const u32c WALL = RGBA(206, 200, 186, 255), WALL2 = RGBA(176, 184, 190, 255), OUT = RGBA(150, 146, 138, 255), SLAB = RGBA(112, 114, 120, 255), DESK = RGBA(118, 84, 56, 255), CAB = RGBA(104, 110, 112, 255);
+    const u32c STAIR = RGBA(88, 90, 96, 255), RAIL = RGBA(70, 74, 80, 255), SOFA = RGBA(86, 100, 128, 255), PLANT = RGBA(78, 120, 72, 255), PIL = RGBA(176, 170, 160, 255);
+    mapF = OF_F; navLk[0][0] = -7.5f; navLk[0][1] = 17.5f; navLk[0][2] = -7.5f; navLk[0][3] = 9.5f; navLk[1][0] = 7.5f; navLk[1][1] = -17.5f; navLk[1][2] = 7.5f; navLk[1][3] = -9.5f; nNavLk = 2;
     outer(OUT);
-    for (unsigned i = 0; i < sizeof CASA_BOX / sizeof CASA_BOX[0]; i++) { const float *c = CASA_BOX[i]; addBoxY(c[0], c[1], c[2], c[3], c[4], c[5], CASA_COL[(int)c[6]]); }
-    B(-22, -20, 3, 3, 2.0f, ROCK); B(23, -22, 3.6f, 3, 2.4f, ROCK); B(-24, 17, 3.6f, 3, 2.4f, ROCK); B(22, 21, 3, 3, 2.0f, ROCK);
-    B(-20, 4, 1.6f, 1.6f, 1.2f, CRATE); B(-20, 6, 1.6f, 1.6f, 1.2f, CRATE); B(21, -3, 1.6f, 1.6f, 1.2f, CRATE); B(21, 0, 1.6f, 1.6f, 1.2f, CRATE); B(0, 19, 2.4f, 1.2f, 1.0f, CRATE);
-    B(-14, 22, 5, 0.9f, 0.5f, LOGC); B(14, -20, 5, 0.9f, 0.5f, LOGC); B(-16, -16, 1.4f, 1.4f, 1.0f, LOGC); B(17, 17, 1.4f, 1.4f, 1.0f, LOGC);
+    addBoxY(0, -22.3f, 57.2f, 0.6f, 0, 7.2f, OUT); addBoxY(0, 22.3f, 57.2f, 0.6f, 0, 7.2f, OUT); addBoxY(-28.3f, 0, 0.6f, 45.2f, 0, 7.2f, OUT); addBoxY(28.3f, 0, 0.6f, 45.2f, 0, 7.2f, OUT);   /* fachada: paredes exteriores de los dos pisos */
+    addBoxY(0, 0, 57.2f, 45.2f, 6.8f, 7.2f, SLAB);                                           /* techo */
+    /* losa del piso de arriba, con tres huecos: vacio del vestibulo y las dos escaleras */
+    {
+        static const float XS[8] = { -28, -9.8f, -5.5f, -3, 3, 5.5f, 9.8f, 28 }, ZS[8] = { -22, -15.2f, -12, -9.8f, 9.8f, 12, 15.2f, 22 };
+        static const float HOLE[3][4] = { { -3, 3, -12, 12 }, { -9.8f, -5.5f, 9.8f, 15.2f }, { 5.5f, 9.8f, -15.2f, -9.8f } };
+        for (int j = 0; j < 7; j++) {
+            float za = ZS[j], zb = ZS[j + 1], zc = (za + zb) * .5f; int run = -1;
+            for (int i = 0; i <= 7; i++) {
+                int free = 0;
+                if (i < 7) { float xc = (XS[i] + XS[i + 1]) * .5f; free = 1; for (int k = 0; k < 3; k++) if (xc > HOLE[k][0] && xc < HOLE[k][1] && zc > HOLE[k][2] && zc < HOLE[k][3]) free = 0; }
+                if (free && run < 0) run = i;
+                if (!free && run >= 0) { addBoxY((XS[run] + XS[i]) * .5f, zc, XS[i] - XS[run], zb - za, 3.4f, OF_F, SLAB); run = -1; }
+            }
+        }
+    }
+    ofLevel(0, 3.4f, WALL, WALL2, DESK, CAB);          /* planta baja */
+    ofLevel(OF_F, 3.2f, WALL2, WALL, DESK, CAB);       /* planta alta */
+    ofStair(-9.8f, -5.5f, 17.0f, -1, STAIR); ofStair(5.5f, 9.8f, -17.0f, 1, STAIR);
+    /* barandales: alrededor del vacio y a los lados del hueco de cada escalera */
+    addBoxY(-3, 0, 0.25f, 24, OF_F, OF_F + 1.0f, RAIL); addBoxY(3, 0, 0.25f, 24, OF_F, OF_F + 1.0f, RAIL); addBoxY(0, -12, 6, 0.25f, OF_F, OF_F + 1.0f, RAIL); addBoxY(0, 12, 6, 0.25f, OF_F, OF_F + 1.0f, RAIL);
+    addBoxY(-5.4f, 12.5f, 0.25f, 5.4f, OF_F, OF_F + 1.0f, RAIL); addBoxY(-7.65f, 15.3f, 4.3f, 0.25f, OF_F, OF_F + 1.0f, RAIL);
+    addBoxY(5.4f, -12.5f, 0.25f, 5.4f, OF_F, OF_F + 1.0f, RAIL); addBoxY(7.65f, -15.3f, 4.3f, 0.25f, OF_F, OF_F + 1.0f, RAIL);
+    /* vestibulo, planta baja: recepcion, pilares y sofas */
+    addBoxY(0, -16, 6, 1.4f, 0, 1.1f, DESK); addBoxY(0, 16, 6, 1.4f, 0, 1.1f, DESK);
+    addBoxY(-4.5f, -12, 0.8f, 0.8f, 0, 3.4f, PIL); addBoxY(4.5f, -12, 0.8f, 0.8f, 0, 3.4f, PIL); addBoxY(-4.5f, 12, 0.8f, 0.8f, 0, 3.4f, PIL); addBoxY(4.5f, 12, 0.8f, 0.8f, 0, 3.4f, PIL);
+    addBoxY(-6.5f, 0, 1.0f, 4.0f, 0, 0.5f, SOFA); addBoxY(6.5f, 0, 1.0f, 4.0f, 0, 0.5f, SOFA); addBoxY(-8.8f, -20.8f, 1.0f, 1.0f, 0, 1.2f, PLANT); addBoxY(8.8f, 20.8f, 1.0f, 1.0f, 0, 1.2f, PLANT);
+    /* galeria de arriba: jardineras como cobertura */
+    addBoxY(-6.5f, -17, 2.0f, 1.0f, OF_F, OF_F + 1.0f, PLANT); addBoxY(6.5f, 17, 2.0f, 1.0f, OF_F, OF_F + 1.0f, PLANT); addBoxY(-8, 0, 1.0f, 3.0f, OF_F, OF_F + 0.8f, SOFA); addBoxY(8, 0, 1.0f, 3.0f, OF_F, OF_F + 0.8f, SOFA);
 }
 
-static void (*const MAP_BUILD[NMAPS])(void) = { mapBase, mapCity, mapIndustrial, mapWarehouse, mapBunker, mapDesert, mapComplex, mapField, mapCasa };
+static void (*const MAP_BUILD[NMAPS])(void) = { mapBase, mapCity, mapIndustrial, mapWarehouse, mapBunker, mapDesert, mapComplex, mapField, mapOffice };
 
-#define SP(x, z) { (x), (z) }
+#define SP(x, z) { (x), (z), 0 }
+#define SPU(x, z) { (x), (z), 1 }
 static const MapDef MAPS[NMAPS] = {
  { "BASE MILITAR", RGBA(166, 150, 120, 255), RGBA(179, 163, 132, 255), RGBA(201, 183, 156, 255), 3, 8,
    { SP(-0.5f,26.5f), SP(-24.0f,26.0f), SP(24.0f,26.0f) }, { SP(0.0f,-27.0f), SP(-25.0f,-27.0f), SP(25.0f,-27.0f), SP(-12.5f,-21.5f), SP(12.5f,-21.5f), SP(-9.0f,-11.0f), SP(9.0f,-11.0f), SP(0.0f,-15.0f) } },
@@ -6869,8 +6899,9 @@ static const MapDef MAPS[NMAPS] = {
    { SP(-0.5f,25.5f), SP(-7.5f,11.5f), SP(7.5f,11.5f) }, { SP(-0.5f,-28.5f), SP(-18.5f,-19.5f), SP(17.5f,-19.5f), SP(-18.5f,14.5f), SP(15.5f,16.5f), SP(-3.0f,-10.0f), SP(3.0f,10.0f), SP(-28.5f,-2.5f) } },
  { "COMBATE EXTERIOR", RGBA(120, 124, 92, 255), RGBA(132, 136, 102, 255), RGBA(184, 196, 190, 255), 3, 8,
    { SP(0.0f,28.0f), SP(-14.0f,24.0f), SP(14.0f,24.0f) }, { SP(0.0f,-28.0f), SP(-14.0f,-24.0f), SP(14.0f,-26.0f), SP(-25.0f,-15.0f), SP(25.0f,-13.0f), SP(-10.0f,-14.0f), SP(10.0f,-14.0f), SP(0.0f,-10.0f) } },
- { "CASA", RGBA(122, 130, 100, 255), RGBA(134, 142, 110, 255), RGBA(190, 204, 216, 255), 3, 8,
-   { SP(0.0f,-24.0f), SP(-22.0f,-20.0f), SP(22.0f,-22.0f) }, { SP(-5.5f,-4.5f), SP(9.5f,-4.5f), SP(0.5f,2.5f), SP(0.0f,26.0f), SP(-24.0f,25.0f), SP(24.0f,25.0f), SP(-22.0f,6.0f), SP(22.0f,4.0f) } },
+ { "OFICINAS", RGBA(104, 106, 114, 255), RGBA(116, 118, 126, 255), RGBA(150, 154, 162, 255), 4, 10,
+   { SP(0.0f,20.5f), SP(-25.0f,0.5f), SP(25.0f,-0.5f), SPU(0.0f,-20.5f) },
+   { SP(-26.0f,-10.5f), SP(-14.5f,-10.5f), SP(14.5f,10.5f), SP(26.0f,10.5f), SP(0.0f,-20.5f), SPU(-26.0f,-18.0f), SPU(14.5f,-18.0f), SPU(-14.5f,18.0f), SPU(26.0f,18.0f), SPU(-4.5f,6.0f) } },
 };
 #define SKY (MAPS[curMap].sky)
 #endif
@@ -6878,7 +6909,7 @@ static const MapDef MAPS[NMAPS] = {
 /* ===== fin maps.h ===== */
 
 static void buildWorld(void) {
-    nbox = 0;
+    nbox = 0; mapF = 0; nNavLk = 0;
     MAP_BUILD[curMap]();
     navBuildPending = 1;
 }
@@ -6947,70 +6978,87 @@ static int hasLOS(const float *a, const float *b) {
     d[0] /= L; d[1] /= L; d[2] /= L;
     return wallDist(a, d, L) >= L - 0.05f;
 }
-/* ---------- Navegacion: cuadricula de 1 m, BFS de 8 vecinos, componente principal ---------- */
+/* ---------- Navegacion: cuadricula de 1 m, BFS de 8 vecinos, componente principal.
+ * Con dos pisos (mapF > 0) hay dos capas de celdas (nodo = capa * NN + celda); las escaleras unen una celda de abajo con una de arriba. ---------- */
 #define NG 60
-static unsigned char navB[NG * NG];
-static short navComp[NG * NG], navMain = 0;
-static short navPar[NG * NG], navQ[NG * NG];
+#define NN (NG * NG)
+#define NLV 2
+static unsigned char navB[NN * NLV];
+static short navComp[NN * NLV], navMain = 0;
+static short navPar[NN * NLV], navQ[NN * NLV];
 static int navCellOf(float x, float z) { int i = (int)(x + HALF), j = (int)(z + HALF); i = i < 0 ? 0 : (i >= NG ? NG - 1 : i); j = j < 0 ? 0 : (j >= NG ? NG - 1 : j); return j * NG + i; }
-static void navCenter(int c, float *x, float *z) { *x = (c % NG) - HALF + 0.5f; *z = (c / NG) - HALF + 0.5f; }
+static void navCenter(int c, float *x, float *z) { c %= NN; *x = (c % NG) - HALF + 0.5f; *z = (c / NG) - HALF + 0.5f; }
+static int navLinkOf(int u) { for (int k = 0; k < nNavLk; k++) { int a = navCellOf(navLk[k][0], navLk[k][1]), b = NN + navCellOf(navLk[k][2], navLk[k][3]); if (u == a) return b; if (u == b) return a; } return -1; }
 static void navBuild(void) {
-    for (int c = 0; c < NG * NG; c++) { float x, z; navCenter(c, &x, &z); navB[c] = blockedAt(x, z, 0, 0.5f) || x < -HALF + 0.6f || x > HALF - 0.6f || z < -HALF + 0.6f || z > HALF - 0.6f; navComp[c] = 0; }
+    int nl = mapF > 0 ? 2 : 1;
+    for (int c = 0; c < NN * NLV; c++) { navB[c] = 1; navComp[c] = 0; }
+    for (int l = 0; l < nl; l++) for (int c = 0; c < NN; c++) {
+        float x, z, f = l ? mapF : 0; navCenter(c, &x, &z);
+        navB[l * NN + c] = blockedAt(x, z, f, 0.5f) || x < -HALF + 0.6f || x > HALF - 0.6f || z < -HALF + 0.6f || z > HALF - 0.6f || (l && groundAt(x, z, f, 0.25f) < f - 0.05f);   /* arriba tambien es pared el vacio sin piso */
+    }
     int nc = 0, best = 0, bestN = 0;
-    for (int c = 0; c < NG * NG; c++) {
+    for (int c = 0; c < NN * nl; c++) {
         if (navB[c] || navComp[c]) continue;
         nc++; int h = 0, t = 0, n = 0; navQ[t++] = (short)c; navComp[c] = (short)nc;
-        while (h < t) { int u = navQ[h++]; n++; int ux = u % NG, uz = u / NG; static const int dx[4] = { 1, -1, 0, 0 }, dz[4] = { 0, 0, 1, -1 };
-            for (int k = 0; k < 4; k++) { int vx = ux + dx[k], vz = uz + dz[k]; if (vx < 0 || vz < 0 || vx >= NG || vz >= NG) continue; int v = vz * NG + vx; if (navB[v] || navComp[v]) continue; navComp[v] = (short)nc; navQ[t++] = (short)v; } }
+        while (h < t) { int u = navQ[h++]; n++; int lv = u / NN, cu = u % NN, ux = cu % NG, uz = cu / NG; static const int dx[4] = { 1, -1, 0, 0 }, dz[4] = { 0, 0, 1, -1 };
+            for (int k = 0; k < 4; k++) { int vx = ux + dx[k], vz = uz + dz[k]; if (vx < 0 || vz < 0 || vx >= NG || vz >= NG) continue; int v = lv * NN + vz * NG + vx; if (navB[v] || navComp[v]) continue; navComp[v] = (short)nc; navQ[t++] = (short)v; }
+            int lk = navLinkOf(u); if (lk >= 0 && !navB[lk] && !navComp[lk]) { navComp[lk] = (short)nc; navQ[t++] = (short)lk; } }
         if (n > bestN) { bestN = n; best = nc; }
     }
     navMain = (short)best; navBuildPending = 0;
 }
 static int navOk(float x, float z) { if (navBuildPending) navBuild(); int c = navCellOf(x, z); return !navB[c] && navComp[c] == navMain; }
-static int navSnap(float x, float z) {              /* celda libre de la componente principal mas cercana */
+static int navSnapL(float x, float z, int l) {      /* celda libre de la componente principal mas cercana (en la capa l) */
     if (navBuildPending) navBuild();
-    int c0 = navCellOf(x, z), cx = c0 % NG, cz = c0 / NG;
+    if (l && mapF <= 0) l = 0;
+    int c0 = navCellOf(x, z), cx = c0 % NG, cz = c0 / NG, o = l * NN;
     for (int r = 0; r < NG; r++) for (int j = cz - r; j <= cz + r; j++) for (int i = cx - r; i <= cx + r; i++) {
         if (i < 0 || j < 0 || i >= NG || j >= NG) continue; if (r && j != cz - r && j != cz + r && i != cx - r && i != cx + r) continue;
-        int c = j * NG + i; if (!navB[c] && navComp[c] == navMain) return c;
+        int c = j * NG + i; if (!navB[o + c] && navComp[o + c] == navMain) return o + c;
     }
-    return c0;
+    return o + c0;
 }
-/* camino de celdas desde (x0,z0) hasta (x1,z1); se submuestrea si es largo */
-static int navPath(float x0, float z0, float x1, float z1, short *out, int max) {
-    int s = navSnap(x0, z0), g = navSnap(x1, z1); if (s == g) { out[0] = (short)g; return 1; }
-    for (int c = 0; c < NG * NG; c++) navPar[c] = -1;
+static int navSnap(float x, float z) { return navSnapL(x, z, 0); }
+/* camino de nodos desde (x0,z0) en la capa l0 hasta (x1,z1) en la capa l1; se submuestrea si es largo */
+static int navPath(float x0, float z0, int l0, float x1, float z1, int l1, short *out, int max) {
+    int s = navSnapL(x0, z0, l0), g = navSnapL(x1, z1, l1); if (s == g) { out[0] = (short)g; return 1; }
+    for (int c = 0; c < NN * NLV; c++) navPar[c] = -1;
     int h = 0, t = 0; navQ[t++] = (short)g; navPar[g] = (short)g;
     static const int dx[8] = { 1, -1, 0, 0, 1, 1, -1, -1 }, dz[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
     while (h < t && navPar[s] < 0) {
-        int u = navQ[h++], ux = u % NG, uz = u / NG;
+        int u = navQ[h++], lv = u / NN, cu = u % NN, ux = cu % NG, uz = cu / NG, o = lv * NN;
         for (int k = 0; k < 8; k++) {
             int vx = ux + dx[k], vz = uz + dz[k]; if (vx < 0 || vz < 0 || vx >= NG || vz >= NG) continue;
-            int v = vz * NG + vx; if (navB[v] || navPar[v] >= 0 || navComp[v] != navMain) continue;
-            if (k >= 4 && (navB[uz * NG + vx] || navB[vz * NG + ux])) continue;
+            int v = o + vz * NG + vx; if (navB[v] || navPar[v] >= 0 || navComp[v] != navMain) continue;
+            if (k >= 4 && (navB[o + uz * NG + vx] || navB[o + vz * NG + ux])) continue;
             navPar[v] = (short)u; navQ[t++] = (short)v;
         }
+        int lk = navLinkOf(u); if (lk >= 0 && !navB[lk] && navPar[lk] < 0 && navComp[lk] == navMain) { navPar[lk] = (short)u; navQ[t++] = (short)lk; }
     }
     if (navPar[s] < 0) return 0;
     int n = 0, c = s, tot = 0; for (int q = s; q != g; q = navPar[q]) tot++;
     int stride = tot > max * 2 ? 3 : (tot > max ? 2 : 1), k = 0;
-    while (c != g && n < max - 1) { c = navPar[c]; if ((k++ % stride) == 0 || c == g) out[n++] = (short)c; }
+    while (c != g && n < max - 1) { int nx = navPar[c]; int link = (nx / NN) != (c / NN); c = nx; if ((k++ % stride) == 0 || c == g || link) out[n++] = (short)c; }      /* los extremos de una escalera siempre se conservan */
     if (n == 0 || out[n - 1] != g) out[n++] = (short)g;
     return n;
 }
-static int walkClear(float x0, float z0, float x1, float z1) {      /* linea recta libre para un cuerpo de radio 0.4 */
+static int walkClearF(float x0, float z0, float x1, float z1, float feet) {      /* linea recta libre para un cuerpo de radio 0.4 que esta a la altura feet */
     float dx = x1 - x0, dz = z1 - z0, L = sqrtf(dx * dx + dz * dz); int n = (int)(L / 0.4f) + 1;
-    for (int i = 1; i <= n; i++) { float t = (float)i / n; if (blockedAt(x0 + dx * t, z0 + dz * t, 0, 0.42f)) return 0; }
+    for (int i = 1; i <= n; i++) { float t = (float)i / n; if (blockedAt(x0 + dx * t, z0 + dz * t, feet, 0.42f)) return 0; }
     return 1;
 }
-static int freeSpot(float zmin, float zmax, float *ox, float *oz) {
+static int walkClear(float x0, float z0, float x1, float z1) { return walkClearF(x0, z0, x1, z1, 0); }
+static int freeSpotL(float zmin, float zmax, int l, float *ox, float *oz) {
     if (navBuildPending) navBuild();
+    if (l && mapF <= 0) l = 0;
     for (int i = 0; i < 120; i++) {
         float x = rndf(-HALF + 2, HALF - 2), z = rndf(zmin, zmax);
-        if (!blockedAt(x, z, 0, 1.0f) && navOk(x, z)) { *ox = x; *oz = z; return 1; }
+        int c = l * NN + navCellOf(x, z);
+        if (!blockedAt(x, z, l ? mapF : 0, 1.0f) && !navB[c] && navComp[c] == navMain) { *ox = x; *oz = z; return 1; }
     }
-    float cx, cz; navCenter(navSnap(0, (zmin + zmax) * .5f), &cx, &cz); *ox = cx; *oz = cz; return 0;
+    float cx, cz; navCenter(navSnapL(0, (zmin + zmax) * .5f, l), &cx, &cz); *ox = cx; *oz = cz; return 0;
 }
+static int freeSpot(float zmin, float zmax, float *ox, float *oz) { return freeSpotL(zmin, zmax, 0, ox, oz); }
 
 /* ---------- Render 3D ---------- */
 typedef struct { float x, y, z, r, g, b; } V;
@@ -7284,7 +7332,7 @@ static const Weapon W[4] = {
 enum { M_MENU, M_SETTINGS, M_PLAYING, M_ROUNDEND, M_PAUSE, M_END, M_OPTIONS, M_MP_MENU, M_MP_LOBBY, M_KEYS, M_CODE, M_LAB };
 typedef struct { float x, y, z, vx, vy, vz, yaw, pitch, hp; int alive, ground; float noise, bob, cr; int crWant; int prone; } Player;      /* cr: 0 de pie, 1 agachado, PRONE_CR acostado; prone: esta acostado */
 static Rig pRig; static int pFired;      /* animacion del jugador (tercera persona) */
-typedef struct { float x, z, yaw, hp; int alive, state, burst; float react, fireCD, pause, strafe, strafeT, wx, wz, lkx, lkz, lost, timer, dead, step, walk, mv; int remote, wep, shots; float tx, ty, tz, tyaw, py, pitch; Rig rg; float cr, aimW, hitT, coverX, coverZ, coverT, peekT, px, pz, rlT; int crWant, cov, fireEv, rl; short path[48]; int pn, pi; float pgx, pgz, repT, stuck; int dummy, unused; float armor, plateT; int plates, plating; float hearT; } Bot;   /* dummy: soldado quieto del modo secreto; unused: ranura libre */
+typedef struct { float x, z, yaw, hp; int alive, state, burst; float react, fireCD, pause, strafe, strafeT, wx, wz, lkx, lkz, lost, timer, dead, step, walk, mv; int remote, wep, shots; float tx, ty, tz, tyaw, py, pitch; Rig rg; float cr, aimW, hitT, coverX, coverZ, coverT, peekT, px, pz, rlT; int crWant, cov, fireEv, rl; short path[48]; int pn, pi; float pgx, pgz, repT, stuck; int dummy, unused; float armor, plateT; int plates, plating; float hearT; int lkl, wl, pgl; } Bot;   /* lkl/wl/pgl: piso (0/1) de la ultima posicion conocida, del destino de patrulla y del camino; dummy: soldado quieto del modo secreto; unused: ranura libre */
 
 #define PRONE_CR 2.17f      /* valor de "cr" acostado: la camara queda a ~0,5 m y la caja de impacto a ~0,45 m (las formulas de altura ya usan cr) */
 static Player P;
@@ -7383,17 +7431,20 @@ static void pushFeed(const char *s) {
     strncpy(feed[0], s, 39); feed[0][39] = 0; feedT[0] = 4.0f;
 }
 
+static void botWander(Bot *b) {      /* nuevo destino de patrulla (con dos pisos, a veces arriba) */
+    int l = (mapF > 0 && (rand() & 1)); freeSpotL(-HALF + 2, HALF - 2, l, &b->wx, &b->wz); b->wl = l;
+}
 static void spawnBots(void) {
     nbots = S.bots > MAXBOT ? MAXBOT : S.bots;
     for (int i = 0; i < nbots; i++) {
         Bot *b = &bots[i]; memset(b, 0, sizeof(*b));
-        { const MapDef *md = &MAPS[curMap]; const SpawnPt *sp = &md->bs[i % md->nb]; int c = navSnap(sp->x, sp->z); navCenter(c, &b->x, &b->z); if (walkClear(sp->x, sp->z, sp->x, sp->z) && !blockedAt(sp->x, sp->z, 0, 0.45f)) { b->x = sp->x; b->z = sp->z; } }
+        { const MapDef *md = &MAPS[curMap]; const SpawnPt *sp = &md->bs[i % md->nb]; int l = (sp->up && mapF > 0); int c = navSnapL(sp->x, sp->z, l); navCenter(c, &b->x, &b->z); b->py = l ? mapF : 0; if (!blockedAt(sp->x, sp->z, b->py, 0.45f) && !(l && groundAt(sp->x, sp->z, mapF, 0.25f) < mapF - 0.05f)) { b->x = sp->x; b->z = sp->z; } }
         b->hp = DIFF_HP[S.diff]; b->alive = 1; b->state = BS_PATROL; b->yaw = rndf(0, 6.28f);
 #ifdef PS2_ONLINE
         b->armor = PLATE_HP * PLATE_N; b->plates = PLATE_STOCK;
 #endif
         b->strafe = (rand() & 1) ? 1 : -1; b->strafeT = 1; b->fireCD = 0.5f;
-        freeSpot(-HALF + 2, HALF - 2, &b->wx, &b->wz); b->pn = 0;
+        botWander(b); b->pn = 0;
     }
 }
 static void resetAmmo(void) {
@@ -7406,14 +7457,14 @@ static void resetAmmo(void) {
     memset(bfSpot, 0, sizeof bfSpot); memset(bfDT, 0, sizeof bfDT); memset(nades, 0, sizeof nades); memset(booms, 0, sizeof booms); memset(smokes, 0, sizeof smokes); memset(smokeHoles, 0, sizeof smokeHoles); memset(pts, 0, sizeof pts); memset(trcs, 0, sizeof trcs); memset(cass, 0, sizeof cass); memset(scr, 0, sizeof scr); bfFlashT = 0; goreReset();
 #endif
 }
-static float openYaw(float x, float z) {            /* mira hacia donde hay mas espacio libre */
+static float openYaw(float x, float z, float y0) {            /* mira hacia donde hay mas espacio libre */
     float best = -1, by = 0;
-    for (int k = 0; k < 16; k++) { float y = k * (6.2832f / 16), d[3] = { -sinf(y), 0, -cosf(y) }, o[3] = { x, 1.4f, z }; float w = wallDist(o, d, 40); if (w > best) { best = w; by = y; } }
+    for (int k = 0; k < 16; k++) { float y = k * (6.2832f / 16), d[3] = { -sinf(y), 0, -cosf(y) }, o[3] = { x, y0 + 1.4f, z }; float w = wallDist(o, d, 40); if (w > best) { best = w; by = y; } }
     return by;
 }
 static void spawnPlayer(void) {
     const MapDef *md = &MAPS[curMap]; const SpawnPt *sp = &md->ps[(roundNo - 1) % md->np];
-    P.x = sp->x; P.z = sp->z; P.yaw = openYaw(sp->x, sp->z);
+    P.x = sp->x; P.z = sp->z; P.y = (sp->up && mapF > 0) ? mapF : 0; P.yaw = openYaw(sp->x, sp->z, P.y);
 }
 static void startRound(void) {
     sandbox = 0;
@@ -8356,7 +8407,7 @@ static void botShoot(Bot *b, float dist) {
 #ifdef PS2_ONLINE
     bfSpot[b - bots] = 2.5f;      /* el que dispara aparece en el radar */
 #endif
-    float o[3] = { b->x - sinf(b->yaw) * 0.6f, 1.35f, b->z - cosf(b->yaw) * 0.6f };
+    float o[3] = { b->x - sinf(b->yaw) * 0.6f, b->py + 1.35f, b->z - cosf(b->yaw) * 0.6f };
     float k = DIFF_AIM[S.diff];
     float t[3] = { P.x + bfLeanOffX + rndf(-1, 1) * k * (1 + dist * .35f), P.y + 1.15f - 0.42f * P.cr + rndf(-1, 1) * k * (1 + dist * .3f), P.z + bfLeanOffZ + rndf(-1, 1) * k * (1 + dist * .35f) };
     float d[3] = { t[0] - o[0], t[1] - o[1], t[2] - o[2] };
@@ -8447,7 +8498,7 @@ static void mpBeginRound(int round, int newMatch, int tag, float mx, float mz, f
 }
 static void mpHostBeginRound(int newMatch) {
     if (newMatch) { hostScore = cliScore = 0; roundNo = 1; if (curMap != S.map) { curMap = S.map; buildWorld(); } }
-    const MapDef *md = &MAPS[curMap]; float hx = md->ps[(roundNo - 1) % md->np].x, hz = md->ps[(roundNo - 1) % md->np].z, hyaw = openYaw(hx, hz);
+    const MapDef *md = &MAPS[curMap]; float hx = md->ps[(roundNo - 1) % md->np].x, hz = md->ps[(roundNo - 1) % md->np].z, hyaw = openYaw(hx, hz, 0);
     float cx = md->bs[(roundNo - 1) % md->nb].x, cz = md->bs[(roundNo - 1) % md->nb].z, cyaw = openYaw(cx, cz);
     mpTag = (mpTag + 1) & 255;
     unsigned char d[32]; Pk q; pkBegin(&q, 0);
@@ -8591,24 +8642,26 @@ static void mpUpdateRemote(float dt) {       /* suaviza al jugador remoto y calc
 
 /* Busca un punto detras de una caja (respecto del jugador) donde el jugador no tenga linea de vision. */
 /* El bot camina hacia (tx,tz) rodeando paredes: ruta por la cuadricula, atajo directo si el camino esta libre */
-static void navSteer(Bot *b, float tx, float tz, float dt, float *mx, float *mz) {
-    float dx = tx - b->x, dz = tz - b->z;
+static void navSteer(Bot *b, float tx, float tz, int tl, float dt, float *mx, float *mz) {
+    float dx = tx - b->x, dz = tz - b->z; int bl = (mapF > 0 && b->py > mapF * 0.5f);
+    int climbing = (mapF > 0 && b->py > 0.25f && b->py < mapF - 0.25f);      /* a medio escalon no se replanea: seguiria subiendo o bajando */
     b->repT -= dt;
-    if (walkClear(b->x, b->z, tx, tz)) { float L = sqrtf(dx * dx + dz * dz) + 1e-4f; *mx = dx / L; *mz = dz / L; b->pn = 0; return; }
+    if (bl == tl && walkClearF(b->x, b->z, tx, tz, b->py)) { float L = sqrtf(dx * dx + dz * dz) + 1e-4f; *mx = dx / L; *mz = dz / L; b->pn = 0; return; }
     float gd = (tx - b->pgx) * (tx - b->pgx) + (tz - b->pgz) * (tz - b->pgz);
-    if (b->pn <= 0 || b->pi >= b->pn || gd > 4.0f || b->repT <= 0) {
-        b->pn = navPath(b->x, b->z, tx, tz, b->path, 48); b->pi = 0; b->pgx = tx; b->pgz = tz; b->repT = 2.5f;
+    if (b->pn <= 0 || b->pi >= b->pn || (!climbing && (gd > 4.0f || b->pgl != tl || b->repT <= 0))) {
+        b->pn = navPath(b->x, b->z, bl, tx, tz, tl, b->path, 48); b->pi = 0; b->pgx = tx; b->pgz = tz; b->pgl = tl; b->repT = 2.5f;
         if (b->pn <= 0) { float L = sqrtf(dx * dx + dz * dz) + 1e-4f; *mx = dx / L; *mz = dz / L; return; }
     }
-    for (;;) {   /* salta al waypoint mas lejano con linea libre */
+    for (;;) {   /* salta al waypoint mas lejano con linea libre (solo los de su mismo piso) */
         float wx, wz; int adv = 0;
-        for (int k = b->pn - 1; k > b->pi; k--) { navCenter(b->path[k], &wx, &wz); if (walkClear(b->x, b->z, wx, wz)) { b->pi = k; adv = 1; break; } }
+        for (int k = b->pn - 1; !climbing && k > b->pi; k--) { if (b->path[k] / NN != bl) continue; navCenter(b->path[k], &wx, &wz); if (walkClearF(b->x, b->z, wx, wz, b->py)) { b->pi = k; adv = 1; break; } }
         navCenter(b->path[b->pi], &wx, &wz);
-        if ((wx - b->x) * (wx - b->x) + (wz - b->z) * (wz - b->z) < 0.5f && b->pi < b->pn - 1) { b->pi++; continue; }
+        if ((wx - b->x) * (wx - b->x) + (wz - b->z) * (wz - b->z) < 0.5f && b->pi < b->pn - 1 && b->path[b->pi] / NN == bl) { b->pi++; continue; }
         (void)adv; float ddx = wx - b->x, ddz = wz - b->z, L = sqrtf(ddx * ddx + ddz * ddz) + 1e-4f; *mx = ddx / L; *mz = ddz / L; break;
     }
 }
 static int botFindCover(const Bot *b, float *ox, float *oz) {
+    if (mapF > 0 && b->py > mapF * 0.5f) return 0;      /* arriba no buscan cobertura (la busqueda es de planta baja) */
     float eye[3] = { P.x, P.y + 1.4f - 0.4f * P.cr, P.z }, best = 1e9f; int found = 0;
     for (int i = 0; i < nbox; i++) {
         const Box *bx = &boxes[i];
@@ -8642,7 +8695,8 @@ static void updateBots(float dt, int active) {
         float dx = P.x - b->x, dz = P.z - b->z, dist = sqrtf(dx * dx + dz * dz);
         float toYaw = atan2f(-dx, -dz), dyaw = toYaw - b->yaw;
         dyaw = atan2f(sinf(dyaw), cosf(dyaw));
-        float from[3] = { b->x, 1.55f, b->z }, to[3] = { ex, ey, ez };
+        int pl = (mapF > 0 && P.y > mapF * 0.5f);      /* el jugador esta arriba */
+        float from[3] = { b->x, b->py + 1.55f, b->z }, to[3] = { ex, ey, ez };
         /* VISION: dentro del cono (o de cerca) y con linea de vista libre. Agachado o acostado se te ve desde menos lejos. */
         float vrange = 48.0f - 9.0f * clampf(P.cr, 0.0f, 2.0f);
         int inCone = fabsf(dyaw) < DIFF_FOV[di] || (dist < VIS_PERI_R && fabsf(dyaw) < VIS_PERI_A) || dist < VIS_NEAR_R;
@@ -8653,7 +8707,7 @@ static void updateBots(float dt, int active) {
                 b->hearT -= dt;
                 if (b->hearT <= 0) {
                     float e = 1.2f + 0.18f * dist; b->hearT = 0.7f;
-                    b->lkx = clampf(P.x + rndf(-e, e), -HALF + 1, HALF - 1); b->lkz = clampf(P.z + rndf(-e, e), -HALF + 1, HALF - 1);
+                    b->lkx = clampf(P.x + rndf(-e, e), -HALF + 1, HALF - 1); b->lkz = clampf(P.z + rndf(-e, e), -HALF + 1, HALF - 1); b->lkl = pl;
                     if (b->state == BS_PATROL) { b->state = BS_SEARCH; b->timer = 0; }
                 }
             }
@@ -8664,7 +8718,7 @@ static void updateBots(float dt, int active) {
             toYaw = atan2f(-dx, -dz); dyaw = toYaw - b->yaw; dyaw = atan2f(sinf(dyaw), cosf(dyaw));
         }
         if (sees) {
-            b->lkx = P.x; b->lkz = P.z; b->lost = 0;
+            b->lkx = P.x; b->lkz = P.z; b->lkl = pl; b->lost = 0;
             if (b->state == BS_PATROL || b->state == BS_SEARCH) { b->state = BS_ALERT; b->react = DIFF_REACT[di] * rndf(0.8f, 1.3f); }
         } else if (b->state == BS_ENGAGE || b->state == BS_ALERT) { b->lost += dt; if (b->lost > 2) { b->state = BS_SEARCH; b->lost = 0; } }
         if (!active || !P.alive) { b->state = BS_PATROL; b->crWant = 0; }
@@ -8672,12 +8726,12 @@ static void updateBots(float dt, int active) {
         if (b->state == BS_PATROL) {
             float wx = b->wx - b->x, wz = b->wz - b->z, L = sqrtf(wx * wx + wz * wz);
             b->timer += dt;
-            if (L < 1.2f || b->timer > 9) { if (rand() % 5 < 2) { float cx, cz; navCenter(navSnap(P.x + rndf(-8, 8), P.z + rndf(-8, 8)), &cx, &cz); b->wx = cx; b->wz = cz; } else freeSpot(-HALF + 2, HALF - 2, &b->wx, &b->wz); b->timer = 0; }
-            if (L < 1e-3f) L = 1; navSteer(b, b->wx, b->wz, dt, &mx, &mz); speed = DIFF_SPEED[di] * 0.55f; face = atan2f(-mx, -mz);
+            if (L < 1.2f || b->timer > 9) { if (rand() % 5 < 2) { float cx, cz; navCenter(navSnapL(P.x + rndf(-8, 8), P.z + rndf(-8, 8), pl), &cx, &cz); b->wx = cx; b->wz = cz; b->wl = pl; } else botWander(b); b->timer = 0; }
+            if (L < 1e-3f) L = 1; navSteer(b, b->wx, b->wz, b->wl, dt, &mx, &mz); speed = DIFF_SPEED[di] * 0.55f; face = atan2f(-mx, -mz);
         } else if (b->state == BS_SEARCH) {
             float wx = b->lkx - b->x, wz = b->lkz - b->z, L = sqrtf(wx * wx + wz * wz);
-            if (L < 1.5f) { b->timer += dt; if (b->timer > 1.2f) { b->state = BS_PATROL; b->timer = 0; freeSpot(-HALF + 2, HALF - 2, &b->wx, &b->wz); } }
-            else { navSteer(b, b->lkx, b->lkz, dt, &mx, &mz); speed = DIFF_SPEED[di] * 0.8f; face = atan2f(-mx, -mz); }
+            if (L < 1.5f) { b->timer += dt; if (b->timer > 1.2f) { b->state = BS_PATROL; b->timer = 0; botWander(b); } }
+            else { navSteer(b, b->lkx, b->lkz, b->lkl, dt, &mx, &mz); speed = DIFF_SPEED[di] * 0.8f; face = atan2f(-mx, -mz); }
         } else if (b->state == BS_ALERT) {
             face = toYaw; b->react -= dt;
             if (b->react <= 0 && sees) { b->state = BS_ENGAGE; b->fireCD = rndf(0.1f, 0.3f); b->burst = 3 + rand() % 3; }
@@ -8685,7 +8739,7 @@ static void updateBots(float dt, int active) {
             float wx = b->coverX - b->x, wz = b->coverZ - b->z, L = sqrtf(wx * wx + wz * wz);
             b->timer += dt; b->crWant = 0;
             if (L < 0.6f || b->timer > 7) { b->state = BS_HIDE; b->timer = rndf(1.2f, 2.6f); }
-            else { navSteer(b, b->coverX, b->coverZ, dt, &mx, &mz); speed = DIFF_SPEED[di] * 1.25f; face = atan2f(-mx, -mz); }
+            else { navSteer(b, b->coverX, b->coverZ, 0, dt, &mx, &mz); speed = DIFF_SPEED[di] * 1.25f; face = atan2f(-mx, -mz); }
         } else if (b->state == BS_HIDE) {           /* agachado detras de la cobertura */
             face = toYaw; b->crWant = 1;
 #ifdef PS2_ONLINE
@@ -8729,12 +8783,13 @@ static void updateBots(float dt, int active) {
         if (face < 1e8f) { float d2 = atan2f(sinf(face - b->yaw), cosf(face - b->yaw)); b->yaw += clampf(d2, -dt * 6, dt * 6); }
         float ml = sqrtf(mx * mx + mz * mz);
         if (ml > 0.01f && speed > 0) {
-            int hit = 0; moveBody(&b->x, &b->z, 0, mx / ml * speed * dt, mz / ml * speed * dt, 0.38f, &hit);
+            int hit = 0; moveBody(&b->x, &b->z, b->py, mx / ml * speed * dt, mz / ml * speed * dt, 0.38f, &hit);
             b->step += speed * dt;
             if (b->step > 2.0f) { b->step = 0; snd_play3d(SND_STEP, b->x, b->z, 0.8f); }
-            if (hit) { b->strafe = -b->strafe; b->repT = 0; b->stuck += dt; if (b->state == BS_PATROL && b->stuck > 1.5f) { freeSpot(-HALF + 2, HALF - 2, &b->wx, &b->wz); b->stuck = 0; b->pn = 0; } } else b->stuck = 0;
+            if (hit) { b->strafe = -b->strafe; b->repT = 0; b->stuck += dt; if (b->state == BS_PATROL && b->stuck > 1.5f) { botWander(b); b->stuck = 0; b->pn = 0; } } else b->stuck = 0;
         }
         b->x = clampf(b->x, -HALF + .5f, HALF - .5f); b->z = clampf(b->z, -HALF + .5f, HALF - .5f);
+        if (mapF > 0) { float g = groundAt(b->x, b->z, b->py + 0.05f, 0.3f); b->py += (g - b->py) * clampf(dt * 14, 0, 1); if (fabsf(g - b->py) < 0.003f) b->py = g; }      /* sube y baja escalones */
         { int mvg = (ml > 0.01f && speed > 0); if (mvg) b->walk += speed * dt * 2.6f; b->mv = mvg ? fminf(1.0f, b->mv + dt * 8) : fmaxf(0.0f, b->mv - dt * 8); }
     }
 }
@@ -9547,7 +9602,7 @@ static void updateRigs(float dt) {
             if (aim && P.alive) { float dx = P.x - b->x, dz = P.z - b->z; pitch = atan2f(P.y + 1.2f - (1.35f - 0.5f * b->rg.crouch), sqrtf(dx * dx + dz * dz) + 0.01f); }
         }
         if (b->rl) { b->rlT += dt; if (b->rlT > 1.7f) b->rl = 0; }
-        RigIn in = { vx, vz, b->yaw, pitch, b->rl ? clampf(b->rlT / 1.7f, 0, 1) : -1.0f, b->crWant, aim, b->fireEv, b->alive, b->py > 0.12f };
+        RigIn in = { vx, vz, b->yaw, pitch, b->rl ? clampf(b->rlT / 1.7f, 0, 1) : -1.0f, b->crWant, aim, b->fireEv, b->alive, mapF <= 0 && b->py > 0.12f };
         b->fireEv = 0;
         rigUpdate(&b->rg, &in, dt);
         b->cr = b->rg.crouch; b->pitch = pitch;
