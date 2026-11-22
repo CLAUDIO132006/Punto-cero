@@ -6627,11 +6627,11 @@ static void rigReload(const Rig *g, SkPose *o, float u) {
 
 
 /* ---------- Configuracion ---------- */
-typedef struct { int diff, bots, rounds, sens, fov, invertY, cross, volume, skin, cam, map; } Settings;
+typedef struct { int diff, bots, rounds, sens, fov, invertY, cross, volume, skin, cam, map, allies; } Settings;      /* bots: enemigos (1-4); allies: aliados que te acompanan (0-3) */
 #ifdef _EE
-static Settings S = { 1, 4, 5, 5, 80, 0, 0, 7, 0, 0, 0 };   /* PS2: primera persona */
+static Settings S = { 1, 4, 5, 5, 80, 0, 0, 7, 0, 0, 0, 3 };   /* PS2: primera persona */
 #else
-static Settings S = { 1, 4, 5, 5, 80, 0, 0, 7, 0, 1, 0 };
+static Settings S = { 1, 4, 5, 5, 80, 0, 0, 7, 0, 1, 0, 3 };
 #endif
 static const char *DIFF_NAMES[] = { "FACIL", "NORMAL", "DIFICIL" };
 static const float DIFF_HP[] = { 70, 100, 130 }, DIFF_REACT[] = { 0.85f, 0.5f, 0.28f };
@@ -6642,6 +6642,17 @@ static const float DIFF_FIRE[] = { 0.55f, 0.38f, 0.26f }, DIFF_SPEED[] = { 3.0f,
 static const float DIFF_FOV[] = { 0.82f, 0.95f, 1.08f };
 #define VIS_PERI_R 4.5f      /* hasta esta distancia ven tambien por los lados... */
 #define VIS_PERI_A 1.75f     /* ...hasta este semiangulo (~100 grados) */
+/* ---- AI LOD: la IA de cada soldado se calcula con una frecuencia que depende de su distancia al jugador ----
+ *   cerca (o en combate) : IA completa, todos los cuadros
+ *   media distancia      : IA simplificada, ~12 decisiones por segundo (la vision/oido y los caminos se calculan menos veces)
+ *   lejos                : ~4 decisiones por segundo (el movimiento se sigue aplicando cada cuadro con la ultima direccion)
+ *   fuera de la partida  : muertos, ranuras libres, jugador remoto y soldados quietos del modo secreto no gastan nada
+ * Un soldado que te ha visto, te dispara o esta cubriendose siempre usa IA completa, sea cual sea la distancia. */
+#define AILOD_ON 1            /* 0 = desactiva el LOD (toda la IA a pleno rendimiento, como antes) */
+#define AILOD_NEAR_R 22.0f    /* menos de esta distancia: IA completa */
+#define AILOD_MID_R 40.0f     /* hasta esta distancia: IA simplificada; mas lejos: IA espaciada */
+#define AILOD_MID_DT 0.08f    /* segundos entre decisiones a media distancia */
+#define AILOD_FAR_DT 0.25f    /* segundos entre decisiones lejos */
 #define VIS_NEAR_R 1.6f      /* a menos de esto te notan aunque estes detras de ellos */
 #define HEAR_R 20.0f         /* alcance del oido con ruido maximo (disparo); correr = 0,6 */
 #define HEAR_WALL 0.5f       /* una pared entre medias reduce el alcance del oido a la mitad */
@@ -6675,7 +6686,7 @@ static void addBoxY(float x, float z, float w, float d, float bot, float top, u3
 
 #define NMAPS 9
 typedef struct { float x, z; int up; } SpawnPt;      /* up = 1: aparece en el piso de arriba */
-typedef struct { const char *name; u32c floorA, floorB, sky; int np, nb; SpawnPt ps[4], bs[10]; } MapDef;
+typedef struct { const char *name; u32c floorA, floorB, sky; int np, nb; SpawnPt ps[8], bs[24]; } MapDef;      /* ps: puntos donde puede aparecer el jugador; bs: donde pueden aparecer los bots */
 static int curMap = 0;
 
 /* ---- ayudas de construccion ---- */
@@ -6843,12 +6854,14 @@ static void ofStair(float x0, float x1, float zBot, float dz, u32c c) {      /* 
     for (int k = 0; k < 12; k++) { float za = zBot + dz * 0.6f * k, zb = za + dz * 0.6f; addBoxY((x0 + x1) * .5f, (za + zb) * .5f, x1 - x0, 0.6f, 0, 0.3f * (k + 1), c); }
 }
 static void mapOffice(void) {
-    const u32c WALL = RGBA(206, 200, 186, 255), WALL2 = RGBA(176, 184, 190, 255), OUT = RGBA(150, 146, 138, 255), SLAB = RGBA(112, 114, 120, 255), DESK = RGBA(118, 84, 56, 255), CAB = RGBA(104, 110, 112, 255);
-    const u32c STAIR = RGBA(88, 90, 96, 255), RAIL = RGBA(70, 74, 80, 255), SOFA = RGBA(86, 100, 128, 255), PLANT = RGBA(78, 120, 72, 255), PIL = RGBA(176, 170, 160, 255);
+    /* pintura de oficina: paredes y techo blanco hueso, piso de madera (grande abajo = MAPS[].floorA/B, arriba = losa de madera), muebles de nogal oscuro */
+    const u32c WALL = RGBA(230, 224, 206, 255), WALL2 = RGBA(222, 216, 197, 255), OUT = RGBA(150, 146, 138, 255), BONE = RGBA(226, 220, 202, 255), CEIL = RGBA(236, 232, 218, 255), DESK = RGBA(92, 62, 42, 255), CAB = RGBA(112, 116, 118, 255);
+    const u32c WOODA = RGBA(176, 128, 84, 255), WOODB = RGBA(164, 117, 75, 255);
+    const u32c STAIR = RGBA(138, 98, 62, 255), RAIL = RGBA(74, 62, 52, 255), SOFA = RGBA(86, 100, 128, 255), PLANT = RGBA(78, 120, 72, 255), PIL = RGBA(206, 200, 184, 255);
     mapF = OF_F; navLk[0][0] = -7.5f; navLk[0][1] = 17.5f; navLk[0][2] = -7.5f; navLk[0][3] = 9.5f; navLk[1][0] = 7.5f; navLk[1][1] = -17.5f; navLk[1][2] = 7.5f; navLk[1][3] = -9.5f; nNavLk = 2;
     outer(OUT);
-    addBoxY(0, -22.3f, 57.2f, 0.6f, 0, 7.2f, OUT); addBoxY(0, 22.3f, 57.2f, 0.6f, 0, 7.2f, OUT); addBoxY(-28.3f, 0, 0.6f, 45.2f, 0, 7.2f, OUT); addBoxY(28.3f, 0, 0.6f, 45.2f, 0, 7.2f, OUT);   /* fachada: paredes exteriores de los dos pisos */
-    addBoxY(0, 0, 57.2f, 45.2f, 6.8f, 7.2f, SLAB);                                           /* techo */
+    addBoxY(0, -22.3f, 57.2f, 0.6f, 0, 7.2f, BONE); addBoxY(0, 22.3f, 57.2f, 0.6f, 0, 7.2f, BONE); addBoxY(-28.3f, 0, 0.6f, 45.2f, 0, 7.2f, BONE); addBoxY(28.3f, 0, 0.6f, 45.2f, 0, 7.2f, BONE);   /* fachada: paredes exteriores de los dos pisos */
+    addBoxY(0, 0, 57.2f, 45.2f, 6.8f, 7.2f, CEIL);                                           /* techo */
     /* losa del piso de arriba, con tres huecos: vacio del vestibulo y las dos escaleras */
     {
         static const float XS[8] = { -28, -9.8f, -5.5f, -3, 3, 5.5f, 9.8f, 28 }, ZS[8] = { -22, -15.2f, -12, -9.8f, 9.8f, 12, 15.2f, 22 };
@@ -6859,7 +6872,9 @@ static void mapOffice(void) {
                 int free = 0;
                 if (i < 7) { float xc = (XS[i] + XS[i + 1]) * .5f; free = 1; for (int k = 0; k < 3; k++) if (xc > HOLE[k][0] && xc < HOLE[k][1] && zc > HOLE[k][2] && zc < HOLE[k][3]) free = 0; }
                 if (free && run < 0) run = i;
-                if (!free && run >= 0) { addBoxY((XS[run] + XS[i]) * .5f, zc, XS[i] - XS[run], zb - za, 3.4f, OF_F, SLAB); run = -1; }
+                if (!free && run >= 0) {      /* dos capas: abajo el techo blanco de la planta baja y encima el piso de madera de la alta (tono alterno, como tablones) */
+                    float xm = (XS[run] + XS[i]) * .5f, wx = XS[i] - XS[run];
+                    addBoxY(xm, zc, wx, zb - za, 3.4f, 3.5f, CEIL); addBoxY(xm, zc, wx, zb - za, 3.5f, OF_F, ((j + run) & 1) ? WOODB : WOODA); run = -1; }
             }
         }
     }
@@ -6899,9 +6914,12 @@ static const MapDef MAPS[NMAPS] = {
    { SP(-0.5f,25.5f), SP(-7.5f,11.5f), SP(7.5f,11.5f) }, { SP(-0.5f,-28.5f), SP(-18.5f,-19.5f), SP(17.5f,-19.5f), SP(-18.5f,14.5f), SP(15.5f,16.5f), SP(-3.0f,-10.0f), SP(3.0f,10.0f), SP(-28.5f,-2.5f) } },
  { "COMBATE EXTERIOR", RGBA(120, 124, 92, 255), RGBA(132, 136, 102, 255), RGBA(184, 196, 190, 255), 3, 8,
    { SP(0.0f,28.0f), SP(-14.0f,24.0f), SP(14.0f,24.0f) }, { SP(0.0f,-28.0f), SP(-14.0f,-24.0f), SP(14.0f,-26.0f), SP(-25.0f,-15.0f), SP(25.0f,-13.0f), SP(-10.0f,-14.0f), SP(10.0f,-14.0f), SP(0.0f,-10.0f) } },
- { "OFICINAS", RGBA(104, 106, 114, 255), RGBA(116, 118, 126, 255), RGBA(150, 154, 162, 255), 4, 10,
-   { SP(0.0f,20.5f), SP(-25.0f,0.5f), SP(25.0f,-0.5f), SPU(0.0f,-20.5f) },
-   { SP(-26.0f,-10.5f), SP(-14.5f,-10.5f), SP(14.5f,10.5f), SP(26.0f,10.5f), SP(0.0f,-20.5f), SPU(-26.0f,-18.0f), SPU(14.5f,-18.0f), SPU(-14.5f,18.0f), SPU(26.0f,18.0f), SPU(-4.5f,6.0f) } },
+ { "OFICINAS", RGBA(176, 128, 84, 255), RGBA(164, 117, 75, 255), RGBA(204, 199, 184, 255), 8, 24,
+   { SP(0.0f,20.5f), SP(-25.0f,0.5f), SP(25.0f,-0.5f), SPU(0.0f,-20.5f), SP(-14.5f,10.5f), SP(14.5f,-10.5f), SPU(-23.5f,10.5f), SPU(23.5f,-10.5f) },
+   { SP(-23.5f,-10.5f), SP(-14.5f,-10.5f), SP(14.5f,-10.5f), SP(23.5f,-10.5f), SP(-23.5f,10.5f), SP(-14.5f,10.5f), SP(14.5f,10.5f), SP(23.5f,10.5f),      /* planta baja: los ocho despachos */
+     SP(-24.0f,0.0f), SP(24.0f,0.0f), SP(0.0f,-20.5f), SP(0.0f,20.5f),                                                                                        /* pasillos y vestibulo */
+     SPU(-23.5f,-10.5f), SPU(-14.5f,-10.5f), SPU(14.5f,-10.5f), SPU(23.5f,-10.5f), SPU(-23.5f,10.5f), SPU(-14.5f,10.5f), SPU(14.5f,10.5f), SPU(23.5f,10.5f),   /* planta alta: los ocho despachos */
+     SPU(-24.0f,0.0f), SPU(24.0f,0.0f), SPU(0.0f,-19.0f), SPU(0.0f,19.0f) } },
 };
 #define SKY (MAPS[curMap].sky)
 #endif
@@ -7303,6 +7321,15 @@ static void drawFloor(void) {
         if (ocHidden(x0, 0, z0, x0 + 5, 0, z0 + 5)) continue;
         float mx = x0 + 2.5f - camX, mz = z0 + 2.5f - camZ;
         float dist = sqrtf(mx * mx + mz * mz);
+        if (mapF > 0) {      /* piso de madera: 4 tablones de 1,25 m por baldosa, en dos tonos alternos */
+            for (int sl = 0; sl < 4; sl++) {
+                float za = z0 + sl * 1.25f, zb = za + 1.25f; u32c bs = ((i + j + sl) & 1) ? MAPS[curMap].floorB : MAPS[curMap].floorA;
+                V v[4]; float px[4] = { x0, x0 + 5, x0 + 5, x0 }, pz[4] = { za, za, zb, zb };
+                for (int k = 0; k < 4; k++) { toView(px[k], 0, pz[k], &v[k].x, &v[k].y, &v[k].z); fogColor(bs, 1.0f, dist, &v[k].r, &v[k].g, &v[k].b); }
+                emitPoly(v, 4, 0);
+            }
+            continue;
+        }
         u32c base = ((i + j) & 1) ? MAPS[curMap].floorB : MAPS[curMap].floorA;
         V v[4]; float px[4] = { x0, x0 + 5, x0 + 5, x0 }, pz[4] = { z0, z0, z0 + 5, z0 + 5 };
         for (int k = 0; k < 4; k++) {
@@ -7356,7 +7383,7 @@ static const Weapon W[4] = {
 enum { M_MENU, M_SETTINGS, M_PLAYING, M_ROUNDEND, M_PAUSE, M_END, M_OPTIONS, M_MP_MENU, M_MP_LOBBY, M_KEYS, M_CODE, M_LAB };
 typedef struct { float x, y, z, vx, vy, vz, yaw, pitch, hp; int alive, ground; float noise, bob, cr; int crWant; int prone; } Player;      /* cr: 0 de pie, 1 agachado, PRONE_CR acostado; prone: esta acostado */
 static Rig pRig; static int pFired;      /* animacion del jugador (tercera persona) */
-typedef struct { float x, z, yaw, hp; int alive, state, burst; float react, fireCD, pause, strafe, strafeT, wx, wz, lkx, lkz, lost, timer, dead, step, walk, mv; int remote, wep, shots; float tx, ty, tz, tyaw, py, pitch; Rig rg; float cr, aimW, hitT, coverX, coverZ, coverT, peekT, px, pz, rlT; int crWant, cov, fireEv, rl; short path[48]; int pn, pi; float pgx, pgz, repT, stuck; int dummy, unused; float armor, plateT; int plates, plating; float hearT; int lkl, wl, pgl; float dirT, skipT; int dirOk; } Bot;   /* lkl/wl/pgl: piso (0/1) de la ultima posicion conocida, del destino de patrulla y del camino; dummy: soldado quieto del modo secreto; unused: ranura libre */
+typedef struct { float x, z, yaw, hp; int alive, state, burst; float react, fireCD, pause, strafe, strafeT, wx, wz, lkx, lkz, lost, timer, dead, step, walk, mv; int remote, wep, shots; float tx, ty, tz, tyaw, py, pitch; Rig rg; float cr, aimW, hitT, coverX, coverZ, coverT, peekT, px, pz, rlT; int crWant, cov, fireEv, rl; short path[48]; int pn, pi; float pgx, pgz, repT, stuck; int dummy, unused; float armor, plateT; int plates, plating; float hearT; int lkl, wl, pgl; float dirT, skipT; int dirOk; float aiT, cmx, cmz, cspd, cface; int aiInit, lod, team, tgt; float shotT, tgT; } Bot;      /* team: 0 enemigo, 1 aliado; tgt: objetivo (-1 jugador, >=0 bot, -2 ninguno); shotT: tiempo desde su ultimo disparo; tgT: tiempo hasta reelegir objetivo */      /* AI LOD: aiT = tiempo desde la ultima decision; cmx/cmz/cspd/cface = ultima direccion, velocidad y orientacion decididas */   /* lkl/wl/pgl: piso (0/1) de la ultima posicion conocida, del destino de patrulla y del camino; dummy: soldado quieto del modo secreto; unused: ranura libre */
 
 #define PRONE_CR 2.17f      /* valor de "cr" acostado: la camara queda a ~0,5 m y la caja de impacto a ~0,45 m (las formulas de altura ya usan cr) */
 static Player P;
@@ -7423,7 +7450,7 @@ typedef struct { float a[3], b[3], age; int on; } SmokeHole;
 static SmokeHole smokeHoles[SMOKE_HOLES]; static int smokeHoleNext;
 static int bfNadeKind, bfSmokes = 2;      /* granada elegida (0 fragmentacion, 1 humo; cruceta arriba) y granadas de humo que quedan */
 /* efectos de combate (particulas con alfa, trazadoras, vainas, marcas): reserva fija y pequena para cuidar la GS de la PS2 */
-#define BF_NP 56
+#define BF_NP 96        /* reserva de particulas (humo, polvo, chispas, fuego, escombros); se reutilizan, nunca se pide memoria nueva */
 typedef struct { float x, y, z, vx, vy, vz, t, T, s0, s1, g, drag; int r, gc, b, a, kind; } Pt;      /* kind 0 humo/polvo, 1 chispa, 2 fuego, 3 destello, 4 escombro */
 typedef struct { float x, y, z, tx, ty, tz, t; } Trc;
 typedef struct { float x, y, z, vx, vy, vz, t, rot; } Cas;
@@ -7431,7 +7458,7 @@ typedef struct { float x, z, r, a; } Scorch;
 static void bfFireFx(const float *o, const float *d, float tEnd, int hitBot);
 static void bfImpact(const float *o, const float *d, float t);
 static void bfBoomFx(float x, float y, float z);
-static Pt pts[BF_NP]; static int ptI; static Trc trcs[10]; static Cas cass[6]; static Scorch scr[8]; static int scrI, bfShotN; static float bfFlashT;
+static Pt pts[BF_NP]; static int ptN, ptEvCnt, ptEvShow; static float ptEvT; static Trc trcs[10];      /* pts[0..ptN-1] = particulas vivas, en orden de aparicion; ptEv* = reciclajes por segundo (HUD) */ static Cas cass[6]; static Scorch scr[8]; static int scrI, bfShotN; static float bfFlashT;
 #else
 #define SWAP_T 0.35f
 #endif
@@ -7449,6 +7476,17 @@ static void goreReset(void);
 static float rdRay(const float *o, const float *d, float t);
 #endif
 static int aliveBots(void) { int n = 0; for (int i = 0; i < nbots; i++) n += bots[i].alive; return n; }
+/* ---------- Equipos: tu equipo = tu + aliados (team 1); el equipo enemigo = team 0 ---------- */
+static int enemyAlive(void) { int n = 0; for (int i = 0; i < nbots; i++) n += bots[i].alive && !bots[i].team; return n; }
+static int allyAlive(void) { int n = 0; for (int i = 0; i < nbots; i++) n += bots[i].alive && bots[i].team == 1; return n; }
+static int allyTotal(void) { int n = 0; for (int i = 0; i < nbots; i++) n += bots[i].team == 1; return n; }
+static int enemyTotal(void) { int n = 0; for (int i = 0; i < nbots; i++) n += !bots[i].team; return n; }
+static int specIdx = -1, specSkip = -1;      /* aliado que observas al morir; specSkip: ese soldado no se dibuja (la camara esta en su cabeza) */
+static int specBot(void) {
+    if (specIdx >= 0 && specIdx < nbots && bots[specIdx].alive && bots[specIdx].team == 1) return specIdx;
+    specIdx = -1; for (int i = 0; i < nbots; i++) if (bots[i].alive && bots[i].team == 1) { specIdx = i; break; }
+    return specIdx;
+}
 static void setBanner(const char *a, const char *b, float t) { strncpy(bannerA, a, 47); strncpy(bannerB, b, 47); bannerA[47] = bannerB[47] = 0; bannerT = t; }
 static void pushFeed(const char *s) {
     for (int i = 3; i > 0; i--) { memcpy(feed[i], feed[i - 1], 40); feedT[i] = feedT[i - 1]; }
@@ -7458,12 +7496,39 @@ static void pushFeed(const char *s) {
 static void botWander(Bot *b) {      /* nuevo destino de patrulla (con dos pisos, a veces arriba) */
     int l = (mapF > 0 && (rand() & 1)); freeSpotL(-HALF + 2, HALF - 2, l, &b->wx, &b->wz); b->wl = l;
 }
-static void spawnBots(void) {
-    nbots = S.bots > MAXBOT ? MAXBOT : S.bots;
+static void allySpawnPos(Bot *b, int k) {      /* los aliados aparecen a tu lado y un poco detras (a los lados y atras, mirando como tu) */
+    float rx = cosf(P.yaw), rz = -sinf(P.yaw), fx = -sinf(P.yaw), fz = -cosf(P.yaw);
+    static const float SD[3] = { -2.2f, 2.2f, 0.0f }, BK[3] = { 0.5f, 0.5f, 2.6f };
+    int l = (mapF > 0 && P.y > mapF * 0.5f); b->py = l ? mapF : 0;
+    for (int a = 0; a < 4; a++) {      /* si el sitio esta ocupado, se acerca poco a poco a ti */
+        float sc = 1.0f - 0.28f * a, x = clampf(P.x + rx * SD[k] * sc - fx * BK[k] * sc, -HALF + 1, HALF - 1), z = clampf(P.z + rz * SD[k] * sc - fz * BK[k] * sc, -HALF + 1, HALF - 1);
+        if (!blockedAt(x, z, b->py, 0.45f)) { b->x = x; b->z = z; return; }
+    }
+    navCenter(navSnapL(P.x, P.z, l), &b->x, &b->z);
+}
+#define SPAWN_NEAR 17.0f       /* distancia minima (m) entre un soldado que aparece y el jugador, si estan en el mismo piso */
+#define SPAWN_NEAR_UP 11.0f    /* ... si estan en pisos distintos */
+static void spawnBots(void) {      /* el jugador ya esta colocado: los soldados salen de los puntos del mapa, lejos de el y de preferencia sin verlo */
+    int na = (int)clampf((float)S.allies, 0, 3), ne = (int)clampf((float)S.bots, 1, 4);      /* aliados (con tigo hasta 4) contra enemigos (hasta 4) */
+    if (na + ne > MAXBOT) ne = MAXBOT - na;
+    nbots = na + ne;
+    const MapDef *md = &MAPS[curMap]; int n = md->nb > 24 ? 24 : md->nb, ord[24], cls[24], pl = (mapF > 0 && P.y > mapF * 0.5f); float dd[24], pe[3] = { P.x, P.y + 1.5f, P.z };
+    for (int k = 0; k < n; k++) {
+        const SpawnPt *q = &md->bs[k]; int l = (q->up && mapF > 0); float dx = q->x - P.x, dz = q->z - P.z, to[3] = { q->x, (l ? mapF : 0) + 1.5f, q->z };
+        dd[k] = sqrtf(dx * dx + dz * dz);
+        cls[k] = dd[k] < (l == pl ? SPAWN_NEAR : SPAWN_NEAR_UP) ? 2 : (hasLOS(pe, to) ? 1 : 0);      /* 0 lejos y sin verte, 1 lejos pero a la vista, 2 cerca */
+    }
+    int m = 0;      /* orden de uso: grupo 0 y 1 al azar; el grupo 2 (cerca) de mas lejos a mas cerca, solo si no alcanzan los demas */
+    for (int c = 0; c < 3; c++) {
+        int s0 = m; for (int k = 0; k < n; k++) if (cls[k] == c) ord[m++] = k;
+        if (c < 2) { for (int i = m - 1; i > s0; i--) { int j = s0 + rand() % (i - s0 + 1), t = ord[i]; ord[i] = ord[j]; ord[j] = t; } }
+        else for (int i = s0 + 1; i < m; i++) { int t = ord[i], j = i - 1; while (j >= s0 && dd[ord[j]] < dd[t]) { ord[j + 1] = ord[j]; j--; } ord[j + 1] = t; }
+    }
     for (int i = 0; i < nbots; i++) {
         Bot *b = &bots[i]; memset(b, 0, sizeof(*b));
-        { const MapDef *md = &MAPS[curMap]; const SpawnPt *sp = &md->bs[i % md->nb]; int l = (sp->up && mapF > 0); int c = navSnapL(sp->x, sp->z, l); navCenter(c, &b->x, &b->z); b->py = l ? mapF : 0; if (!blockedAt(sp->x, sp->z, b->py, 0.45f) && !(l && groundAt(sp->x, sp->z, mapF, 0.25f) < mapF - 0.05f)) { b->x = sp->x; b->z = sp->z; } }
-        b->hp = DIFF_HP[S.diff]; b->alive = 1; b->state = BS_PATROL; b->yaw = rndf(0, 6.28f);
+        if (i < na) { b->team = 1; allySpawnPos(b, i); }
+        else { const SpawnPt *sp = &md->bs[ord[(i - na) % n]]; int l = (sp->up && mapF > 0); int c = navSnapL(sp->x, sp->z, l); navCenter(c, &b->x, &b->z); b->py = l ? mapF : 0; if (!blockedAt(sp->x, sp->z, b->py, 0.45f) && !(l && groundAt(sp->x, sp->z, mapF, 0.25f) < mapF - 0.05f)) { b->x = sp->x; b->z = sp->z; } }
+        b->hp = DIFF_HP[S.diff]; b->alive = 1; b->state = BS_PATROL; b->yaw = b->team ? P.yaw : rndf(0, 6.28f);
 #ifdef PS2_ONLINE
         b->armor = PLATE_HP * PLATE_N; b->plates = PLATE_STOCK;
 #endif
@@ -7478,7 +7543,7 @@ static void resetAmmo(void) {
     bfAds = bfBloom = bfShake = bfSprA = bfNadeT = 0; bfStam = 1; bfSprint = bfStamLock = bfNadePend = 0; bfNadeSt = 0; bfNadeU = bfThrowT = 0; bfNades = netMode ? 0 : 2; bfSmokes = netMode ? 0 : 2; bfNadeKind = 0;
     bfLean = bfLeanFrac = bfRest = 0; bfLeanOffX = bfLeanOffZ = bfLeanDrop = 0;
     bfArmor = PLATE_HP * PLATE_N; bfPlateU = 0; bfPlateSt = 0; bfPlates = PLATE_STOCK; bfSprintTog = 0; bfPlateChain = bfPlateSnd = 0; bfPlateCloseT = 0;
-    memset(bfSpot, 0, sizeof bfSpot); memset(bfDT, 0, sizeof bfDT); memset(nades, 0, sizeof nades); memset(booms, 0, sizeof booms); memset(smokes, 0, sizeof smokes); memset(smokeHoles, 0, sizeof smokeHoles); memset(pts, 0, sizeof pts); memset(trcs, 0, sizeof trcs); memset(cass, 0, sizeof cass); memset(scr, 0, sizeof scr); bfFlashT = 0; goreReset();
+    memset(bfSpot, 0, sizeof bfSpot); memset(bfDT, 0, sizeof bfDT); memset(nades, 0, sizeof nades); memset(booms, 0, sizeof booms); memset(smokes, 0, sizeof smokes); memset(smokeHoles, 0, sizeof smokeHoles); memset(pts, 0, sizeof pts); ptN = 0; ptEvCnt = ptEvShow = 0; ptEvT = 0; memset(trcs, 0, sizeof trcs); memset(cass, 0, sizeof cass); memset(scr, 0, sizeof scr); bfFlashT = 0; goreReset();
 #endif
 }
 static float openYaw(float x, float z, float y0) {            /* mira hacia donde hay mas espacio libre */
@@ -7487,16 +7552,18 @@ static float openYaw(float x, float z, float y0) {            /* mira hacia dond
     return by;
 }
 static void spawnPlayer(void) {
-    const MapDef *md = &MAPS[curMap]; const SpawnPt *sp = &md->ps[(roundNo - 1) % md->np];
+    const MapDef *md = &MAPS[curMap]; int pi = (roundNo - 1) % md->np;
+    if (md->np > 4) { static int lastPs = -1; pi = rand() % md->np; if (pi == lastPs) pi = (pi + 1) % md->np; lastPs = pi; }      /* con varios puntos de aparicion: uno al azar, sin repetir el anterior */
+    const SpawnPt *sp = &md->ps[pi];
     P.x = sp->x; P.z = sp->z; P.y = (sp->up && mapF > 0) ? mapF : 0; P.yaw = openYaw(sp->x, sp->z, P.y);
 }
 static void startRound(void) {
     sandbox = 0;
-    spawnBots();
     memset(&P, 0, sizeof(P)); memset(&pRig, 0, sizeof(pRig)); spawnPlayer(); P.hp = 100; P.alive = 1; P.ground = 1;
+    spawnBots();      /* despues del jugador: los soldados se colocan lejos de el */
     resetAmmo(); freeze = 2.4f; afterT = 0; mode = M_PLAYING; hurtT = 0;
     char b[40]; snprintf(b, 40, "RONDA %d", roundNo);
-    setBanner(b, "ELIMINA A TODOS LOS BOTS", 2.2f);
+    { char c[48]; snprintf(c, 48, "%d CONTRA %d: ELIMINA AL EQUIPO ENEMIGO", allyTotal() + 1, enemyTotal()); setBanner(b, c, 2.2f); }
 }
 static void startMatch(void) {
     if (curMap != S.map) { curMap = S.map; buildWorld(); }
@@ -7506,8 +7573,13 @@ static void startMatch(void) {
 }
 static void endRound(int won) {
     mode = M_ROUNDEND; afterT = 3.0f;
-    if (won) { scoreMe++; snd_play(SND_WIN, 0.8f); setBanner("RONDA GANADA", "ELIMINASTE A TODOS LOS BOTS", 2.8f); }
-    else { scoreBots++; snd_play(SND_LOSE, 0.6f); setBanner("RONDA PERDIDA", "TE ELIMINARON", 2.8f); }
+    if (won) { scoreMe++; snd_play(SND_WIN, 0.8f); setBanner("RONDA GANADA", "ELIMINASTE AL EQUIPO ENEMIGO", 2.8f); }
+    else { scoreBots++; snd_play(SND_LOSE, 0.6f); setBanner("RONDA PERDIDA", "TU EQUIPO FUE ELIMINADO", 2.8f); }
+}
+static void checkRoundEnd(void) {      /* gana tu equipo si no queda ningun enemigo; pierde si caes tu y todos tus aliados */
+    if (mode != M_PLAYING || sandbox || netMode) return;
+    if (enemyAlive() == 0) endRound(1);
+    else if (!P.alive && allyAlive() == 0) endRound(0);
 }
 
 /* El cuerpo cae donde cabe: se prueba cada postura final contra paredes y cajas y se elige una que no las atraviese */
@@ -7529,6 +7601,7 @@ static int deadPick(const Bot *b, int pref) {
 /* datos del ultimo impacto (los rellena quien llama a damageBot): punto, direccion y fuerza -> ragdoll y salpicaduras */
 static int gHitOn; static float gHitP[3], gHitD[3], gHitF;
 #endif
+static int gByBot; static float gAtkX, gAtkZ;      /* dano hecho por otro soldado (no por ti): quien dispara y desde donde */
 static void damageBot(Bot *b, float dmg, int head) {
     if (!b->alive) return;
 #ifdef PC_ONLINE
@@ -7546,7 +7619,7 @@ static void damageBot(Bot *b, float dmg, int head) {
     }
 #endif
     b->hp -= dmg;
-    if (b->state == BS_PATROL || b->state == BS_SEARCH) { b->state = BS_ALERT; b->react = DIFF_REACT[S.diff] * 0.5f; b->lkx = P.x; b->lkz = P.z; }
+    if (b->state == BS_PATROL || b->state == BS_SEARCH) { b->state = BS_ALERT; b->react = DIFF_REACT[S.diff] * 0.5f; b->lkx = gByBot ? gAtkX : P.x; b->lkz = gByBot ? gAtkZ : P.z; }
     b->hitT = 2.0f;
 #ifdef PS2_ONLINE
     if (!absorbed || dmg > 0) goreHit(b, dmg, head);           /* sangre solo si el dano llego a la carne */
@@ -7556,10 +7629,12 @@ static void damageBot(Bot *b, float dmg, int head) {
 #ifdef PS2_ONLINE
         rdSpawn((int)(b - bots), dmg, head);      /* antes de marcarlo muerto: toma la pose viva como punto de partida */
 #endif
-        b->alive = 0; b->dead = 0; kills++;
-        snd_play3d(SND_DEATH0 + (rand() & 1), b->x, b->z, 1.3f); if (head) heads++;
-        pushFeed(head ? "BAJA - CABEZA" : "BAJA");
-        if (aliveBots() == 0 && mode == M_PLAYING && !sandbox) endRound(1);
+        b->alive = 0; b->dead = 0;
+        snd_play3d(SND_DEATH0 + (rand() & 1), b->x, b->z, 1.3f);
+        if (b->team == 1) pushFeed("ALIADO CAIDO");                                    /* un aliado: no cuenta como baja tuya */
+        else if (gByBot) pushFeed("BAJA ALIADA");                                      /* un aliado elimino a un enemigo */
+        else { kills++; if (head) heads++; pushFeed(head ? "BAJA - CABEZA" : "BAJA"); }
+        checkRoundEnd();
     }
 }
 static void hurtPlayer(float d) {
@@ -7576,7 +7651,7 @@ static void hurtPlayer(float d) {
     P.hp -= d;
     if (hurtT <= 0 && P.hp > 0) snd_play(SND_HURT, 0.8f);
     hurtT = 0.25f;
-    if (P.hp <= 0) { P.hp = 0; P.alive = 0; pRig.deadKind = rand() % 3; snd_play(SND_PDEATH, 1.0f); deaths++; pushFeed("TE ELIMINARON"); if (mode == M_PLAYING && !netMode) endRound(0); }
+    if (P.hp <= 0) { P.hp = 0; P.alive = 0; pRig.deadKind = rand() % 3; snd_play(SND_PDEATH, 1.0f); deaths++; pushFeed("TE ELIMINARON"); if (!netMode) { if (mode == M_PLAYING && allyAlive() > 0 && enemyAlive() > 0) setBanner("ELIMINADO", "OBSERVANDO A TU EQUIPO", 2.5f); checkRoundEnd(); } }
 }
 
 static void startReload(void) {
@@ -7639,7 +7714,7 @@ static void fireWeapon(void) {
         bfSmokeShot(o, d, tBest);            /* si el disparo cruza humo, deja un hueco que se cierra en 2 s */
 #endif
         for (int i = 0; i < nbots; i++) {
-            Bot *b = &bots[i]; if (!b->alive) continue;
+            Bot *b = &bots[i]; if (!b->alive || b->team == 1) continue;      /* las balas atraviesan a tus aliados */
             float cq = b->rg.crouch; float mn[3] = { b->x - .32f, b->py, b->z - .32f }, mx[3] = { b->x + .32f, b->py + 1.42f - 0.45f * cq, b->z + .32f }, c[3] = { b->x, b->py + 1.6f - 0.5f * cq, b->z };
             float tb = rayBox(o, d, mn, mx), th = raySphere(o, d, c, .22f), t = tb < th ? tb : th;
             if (t < tBest) { tBest = t; hit = b; head = th <= tb; }
@@ -7674,8 +7749,27 @@ static void fireWeapon(void) {
 /* ---------- Granadas, indicadores de dano y radar tactico (solo PS2) ---------- */
 
 /* ---------- Efectos de combate estilo "cine belico" (solo PS2) ---------- */
+/* ---- Particle pooling ----
+ * Las particulas viven en una reserva fija (pts[BF_NP]) compactada: solo se recorren las vivas y las que mueren se quitan sin mover el orden
+ * (el orden de dibujo sigue siendo el de aparicion). Si la reserva se llena, se recicla la particula MENOS importante y mas cercana a morir:
+ * antes se pisaba la siguiente casilla del anillo sin mirar, y un tiroteo borraba el fuego y el destello de una explosion a medias. */
+static int ptPrio(int kind, float T) {      /* mas alto = mas importante */
+    switch (kind) { case 3: return 5; case 2: return 4; case 4: return 3; case 1: return 2; default: return T > 1.2f ? 3 : 1; }   /* destello, fuego, escombro, chispa, humo largo de explosion / polvo y humo cortos */
+}
+static Pt *ptAlloc(int kind, float T) {
+    if (ptN < BF_NP) return &pts[ptN++];
+    int pr = ptPrio(kind, T), v = -1, vp = 99; float vl = 1e9f;
+    for (int i = 0; i < ptN; i++) {
+        int p = ptPrio(pts[i].kind, pts[i].T); float l = pts[i].t / pts[i].T;
+        if (p < vp || (p == vp && l < vl)) { vp = p; vl = l; v = i; }
+    }
+    if (v < 0 || vp > pr) { ptEvCnt++; return NULL; }              /* todo lo vivo es mas importante que lo nuevo: se descarta la nueva */
+    memmove(&pts[v], &pts[v + 1], (size_t)(ptN - v - 1) * sizeof(Pt));      /* quita la victima conservando el orden y libera la ultima casilla */
+    ptEvCnt++;
+    return &pts[ptN - 1];
+}
 static void bfPt(int kind, float x, float y, float z, float vx, float vy, float vz, float T, float s0, float s1, int r, int g, int b, int a, float grav, float drag) {
-    Pt *q = &pts[ptI++ % BF_NP];
+    Pt *q = ptAlloc(kind, T); if (!q) return;
     q->kind = kind; q->x = x; q->y = y; q->z = z; q->vx = vx; q->vy = vy; q->vz = vz; q->t = q->T = T; q->s0 = s0; q->s1 = s1; q->r = r; q->gc = g; q->b = b; q->a = a; q->g = grav; q->drag = drag;
 }
 static void bfDust(float x, float y, float z, float n, float spd) {         /* nube de polvo + chispas en un impacto */
@@ -7714,10 +7808,15 @@ static void bfBoomFx(float x, float y, float z) {                    /* explosio
     Scorch *c = &scr[scrI++ % 8]; c->x = x; c->z = z; c->r = 1.7f; c->a = 150;
 }
 static void bfUpdateFx(float dt) {
-    for (int i = 0; i < BF_NP; i++) { Pt *q = &pts[i]; if (q->t <= 0) continue; q->t -= dt;
+    int w = 0;      /* las que mueren se quitan y las vivas se compactan (mismo orden) */
+    for (int i = 0; i < ptN; i++) { Pt *q = &pts[i]; q->t -= dt; if (q->t <= 0) continue;
         q->vy -= q->g * dt; float k = fmaxf(0, 1 - q->drag * dt); q->vx *= k; q->vz *= k; if (q->kind != 1 && q->kind != 4) q->vy *= k;
         q->x += q->vx * dt; q->y += q->vy * dt; q->z += q->vz * dt;
-        if (q->y < 0.03f && (q->kind == 1 || q->kind == 4)) { q->y = 0.03f; q->vy = -q->vy * 0.35f; q->vx *= 0.6f; q->vz *= 0.6f; } }
+        if (q->y < 0.03f && (q->kind == 1 || q->kind == 4)) { q->y = 0.03f; q->vy = -q->vy * 0.35f; q->vx *= 0.6f; q->vz *= 0.6f; }
+        if (w != i) pts[w] = *q;
+        w++; }
+    ptN = w;
+    ptEvT += dt; if (ptEvT >= 1.0f) { ptEvShow = ptEvCnt; ptEvCnt = 0; ptEvT = 0; }
     for (int i = 0; i < 10; i++) if (trcs[i].t > 0) trcs[i].t -= dt;
     for (int i = 0; i < 6; i++) { Cas *c = &cass[i]; if (c->t <= 0) continue; c->t -= dt; c->vy -= 9 * dt; c->x += c->vx * dt; c->y += c->vy * dt; c->z += c->vz * dt; c->rot += 14 * dt;
         if (c->y < 0.02f) { c->y = 0.02f; c->vy = -c->vy * 0.3f; c->vx *= 0.5f; c->vz *= 0.5f; if (fabsf(c->vy) < 0.4f) c->vy = 0; } }
@@ -8150,7 +8249,7 @@ static void bfDrawFx(void) {
         if (S.cam && P.alive && bfProj(P.x, P.y + 0.02f, P.z, &sx, &sy, &zd, &ps)) bfFan(sx, sy, zd, 0.55f * ps, 6, RGBA(10, 10, 10, 110), RGBA(10, 10, 10, 0), 0.4f);
     }
     for (int i = 0; i < 6; i++) if (cass[i].t > 0) obox(cass[i].x, cass[i].y + 0.01f, cass[i].z, 0.008f, 0.008f, 0.02f, cass[i].rot, RGBA(198, 152, 58, 255));
-    for (int i = 0; i < BF_NP; i++) { Pt *q = &pts[i]; if (q->t <= 0) continue;
+    for (int i = 0; i < ptN; i++) { Pt *q = &pts[i]; if (q->t <= 0) continue;
         if (!bfProj(q->x, q->y, q->z, &sx, &sy, &zd, &ps)) continue;
         float u = 1 - q->t / q->T, sz = lerpf(q->s0, q->s1, u);
         if (q->kind == 1) {      /* chispa: trazo corto en la direccion del movimiento */
@@ -8327,7 +8426,7 @@ static void bfDrawSmoke(void) {
         float sx, sy, ps, tx, ty, tps; int zd, tz;
         if (!bfProj(c[0], c[1], c[2], &sx, &sy, &zd, &ps)) continue;
         { float q = dist > 1e-3f ? 0.35f * rad / dist : 0; if (q > 0.9f) q = 0.9f; if (!bfProj(c[0] + ex * q, c[1] + ey * q, c[2] + ez * q, &tx, &ty, &tz, &tps)) tz = zd; }   /* algo mas cerca que el centro */
-        smk.cx = sx; smk.cy = sy; smk.R = clampf(rad * ps, 4, 1600); smk.A = den * 238.0f * inside; smk.zd = tz; smk.nh = 0; smk.quads = 0;
+        smk.cx = sx; smk.cy = sy; smk.R = clampf(rad * ps, 4, 40000);      /* sin tope practico: con la camara cerca la nube es mucho mas grande que la pantalla */ smk.A = den * 238.0f * inside; smk.zd = tz; smk.nh = 0; smk.quads = 0;
         for (int i = 0; i < SMOKE_HOLES; i++) {                                  /* huecos de bala que atraviesan esta nube */
             const SmokeHole *h = &smokeHoles[i]; if (!h->on) continue;
             float hr = smokeHoleOpen(h); if (hr < 0.02f) continue;
@@ -8343,8 +8442,14 @@ static void bfDrawSmoke(void) {
             if (merged) continue;
             SmkHoleS *o = &smk.h[smk.nh++]; o->ax = o->bx = hx; o->ay = o->by = hy; o->hp = hpx; o->inf = hpx * 1.7f + 0.6f;
         }
-        float x0 = smk.cx - smk.R, y0 = smk.cy - smk.R, cs = 2.0f * smk.R / 12.0f;
-        for (int j = 0; j < 12; j++) for (int i = 0; i < 12; i++) smkCell(x0 + i * cs, y0 + j * cs, x0 + (i + 1) * cs, y0 + (j + 1) * cs, 0);
+        /* La rejilla base cubre solo la parte VISIBLE del disco. Antes eran 12x12 celdas sobre todo el disco: con la camara cerca la nube mide mas que la
+         * pantalla, las celdas salian enormes (bloques rectangulares con bordes duros) y sus vertices caian fuera del rango de coordenadas de la GS
+         * (celdas que desaparecian y dejaban cortes rectos en el humo). Ahora las celdas son chicas y todo queda dentro de la pantalla. */
+        float gx0 = fmaxf(smk.cx - smk.R, -24.0f), gx1 = fminf(smk.cx + smk.R, SW + 24.0f), gy0 = fmaxf(smk.cy - smk.R, -24.0f), gy1 = fminf(smk.cy + smk.R, SH + 24.0f);
+        if (gx1 <= gx0 || gy1 <= gy0) continue;
+        float cs = fmaxf(gx1 - gx0, gy1 - gy0) / 12.0f;
+        int nx = (int)ceilf((gx1 - gx0) / cs - 1e-3f), ny = (int)ceilf((gy1 - gy0) / cs - 1e-3f);
+        for (int j = 0; j < ny; j++) for (int i = 0; i < nx; i++) smkCell(gx0 + i * cs, gy0 + j * cs, gx0 + (i + 1) * cs, gy0 + (j + 1) * cs, 0);
     }
 }
 static void bfUpdateNades(float dt) {
@@ -8426,14 +8531,16 @@ static void labSet(int i, int dir) {
     snd_play(SND_TICK, 0.6f);
 }
 
-static void botShoot(Bot *b, float dist) {
-    snd_play3d(SND_BOTSHOT, b->x, b->z, 1.0f);
+static void botShoot(Bot *b, float dist, int tg) {      /* tg: a quien dispara (-1 = al jugador, >=0 = a ese soldado) */
+    snd_play3d(SND_BOTSHOT, b->x, b->z, 1.0f); b->shotT = 1.5f;
 #ifdef PS2_ONLINE
-    bfSpot[b - bots] = 2.5f;      /* el que dispara aparece en el radar */
+    bfSpot[b - bots] = b->team ? 0.0f : 2.5f;      /* el enemigo que dispara aparece en el radar (tus aliados ya se ven siempre) */
 #endif
     float o[3] = { b->x - sinf(b->yaw) * 0.6f, b->py + 1.35f, b->z - cosf(b->yaw) * 0.6f };
     float k = DIFF_AIM[S.diff];
-    float t[3] = { P.x + bfLeanOffX + rndf(-1, 1) * k * (1 + dist * .35f), P.y + 1.15f - 0.42f * P.cr + rndf(-1, 1) * k * (1 + dist * .3f), P.z + bfLeanOffZ + rndf(-1, 1) * k * (1 + dist * .35f) };
+    Bot *tb = (tg >= 0 && tg < nbots && bots[tg].alive) ? &bots[tg] : NULL;
+    float cx = tb ? tb->x : P.x + bfLeanOffX, cz = tb ? tb->z : P.z + bfLeanOffZ, cy = tb ? tb->py : P.y, cr = tb ? tb->rg.crouch : P.cr;
+    float t[3] = { cx + rndf(-1, 1) * k * (1 + dist * .35f), cy + 1.15f - 0.42f * cr + rndf(-1, 1) * k * (1 + dist * .3f), cz + rndf(-1, 1) * k * (1 + dist * .35f) };
     float d[3] = { t[0] - o[0], t[1] - o[1], t[2] - o[2] };
     float L = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]); d[0] /= L; d[1] /= L; d[2] /= L;
     float wd = wallDist(o, d, 80);
@@ -8442,12 +8549,15 @@ static void botShoot(Bot *b, float dist) {
       bfPt(3, o[0], o[1], o[2], 0, 0, 0, 0.05f, 0.09f, 0.15f, 255, 225, 150, 220, 0, 0);
       if (wd < 79) bfImpact(o, d, wd); }
 #endif
-    float mn[3] = { P.x + bfLeanOffX - .3f, P.y, P.z + bfLeanOffZ - .3f }, mx[3] = { P.x + bfLeanOffX + .3f, P.y + 1.75f - 0.6f * P.cr, P.z + bfLeanOffZ + .3f };
+    float mn[3] = { cx - .3f, cy, cz - .3f }, mx[3] = { cx + .3f, cy + 1.75f - 0.6f * cr, cz + .3f };
     if (rayBox(o, d, mn, mx) < wd) {
+        if (tb) { gByBot = 1; gAtkX = b->x; gAtkZ = b->z; damageBot(tb, DIFF_DMG[S.diff] * rndf(0.8f, 1.2f), 0); gByBot = 0; }      /* soldado contra soldado */
+        else {
 #ifdef PS2_ONLINE
-        bfHurtFrom(b->x, b->z);
+            bfHurtFrom(b->x, b->z);
 #endif
-        hurtPlayer(DIFF_DMG[S.diff] * rndf(0.8f, 1.2f));
+            hurtPlayer(DIFF_DMG[S.diff] * rndf(0.8f, 1.2f));
+        }
     }
 }
 
@@ -8666,6 +8776,8 @@ static void mpUpdateRemote(float dt) {       /* suaviza al jugador remoto y calc
 
 /* Busca un punto detras de una caja (respecto del jugador) donde el jugador no tenga linea de vision. */
 /* El bot camina hacia (tx,tz) rodeando paredes: ruta por la cuadricula, atajo directo si el camino esta libre */
+static int aiLodN[3], aiLodShow[3];            /* soldados por nivel de IA (completa/media/lejos) en el ultimo cuadro: se muestra en el HUD como IA */
+static int aiPathBudget, aiCoverBudget;         /* calculos caros permitidos por cuadro: busqueda de caminos (A*) y de cobertura */
 static void navSteer(Bot *b, float tx, float tz, int tl, float dt, float *mx, float *mz) {
     float dx = tx - b->x, dz = tz - b->z; int bl = (mapF > 0 && b->py > mapF * 0.5f);
     int climbing = (mapF > 0 && b->py > 0.25f && b->py < mapF - 0.25f);      /* a medio escalon no se replanea: seguiria subiendo o bajando */
@@ -8675,7 +8787,13 @@ static void navSteer(Bot *b, float tx, float tz, int tl, float dt, float *mx, fl
         if (b->dirOk) { float L = sqrtf(dx * dx + dz * dz) + 1e-4f; *mx = dx / L; *mz = dz / L; b->pn = 0; return; }
     } else b->dirOk = 0;
     float gd = (tx - b->pgx) * (tx - b->pgx) + (tz - b->pgz) * (tz - b->pgz);
-    if (b->pn <= 0 || b->pi >= b->pn || (!climbing && (gd > 4.0f || b->pgl != tl || b->repT <= 0))) {
+    int need = (b->pn <= 0 || b->pi >= b->pn || (!climbing && (gd > 4.0f || b->pgl != tl || b->repT <= 0)));
+    if (need && aiPathBudget <= 0) {      /* presupuesto de caminos agotado este cuadro: sigue con el que tiene (o va recto) y lo replanea en el siguiente */
+        if (b->pn <= 0 || b->pi >= b->pn) { float L = sqrtf(dx * dx + dz * dz) + 1e-4f; *mx = dx / L; *mz = dz / L; return; }
+        need = 0;
+    }
+    if (need) {
+        aiPathBudget--;
         b->pn = navPath(b->x, b->z, bl, tx, tz, tl, b->path, 48); b->pi = 0; b->pgx = tx; b->pgz = tz; b->pgl = tl; b->repT = 2.5f;
         if (b->pn <= 0) { float L = sqrtf(dx * dx + dz * dz) + 1e-4f; *mx = dx / L; *mz = dz / L; return; }
     }
@@ -8708,7 +8826,38 @@ static int botFindCover(const Bot *b, float *ox, float *oz) {
     }
     return found;
 }
+static int aiRuns, aiRunsShow;
+/* ---------- Objetivo de cada soldado ----------
+ * Enemigos: el oponente mas cercano entre tu y tus aliados. Aliados: el enemigo mas cercano. Se prefiere al que ven (linea de vista) y se reelige cada ~0,35 s. */
+typedef struct { int tg; float x, z, y, cr, noise, eye[3]; } BTgt;
+static void botTgtFill(int tg, BTgt *o, float ex, float ey, float ez) {
+    o->tg = tg;
+    if (tg >= 0 && tg < nbots) {
+        const Bot *t = &bots[tg];
+        o->x = t->x; o->z = t->z; o->y = t->py; o->cr = t->rg.crouch; o->noise = t->shotT > 0 ? 1.0f : (t->mv > 0.5f ? 0.55f : 0.2f);
+        o->eye[0] = t->x; o->eye[1] = t->py + 1.3f - 0.4f * t->rg.crouch; o->eye[2] = t->z;
+    } else {
+        o->x = P.x; o->z = P.z; o->y = P.y; o->cr = P.cr; o->noise = tg == -1 ? P.noise : 0.0f; o->eye[0] = ex; o->eye[1] = ey; o->eye[2] = ez;
+    }
+}
+static int botTgtValid(const Bot *b, int tg) {
+    if (tg == -1) return b->team == 0 && P.alive;
+    if (tg < 0 || tg >= nbots) return 0;
+    const Bot *t = &bots[tg]; return t->alive && !t->remote && !t->dummy && t->team != b->team;
+}
+static int botTgtPick(const Bot *b, int self, int useLos, float ex, float ey, float ez) {
+    int best = -2, bestVis = -1; float bd = 1e18f, from[3] = { b->x, b->py + 1.55f, b->z };
+    for (int c = -1; c < nbots; c++) {
+        if (c == self || !botTgtValid(b, c)) continue;
+        BTgt t; botTgtFill(c, &t, ex, ey, ez);
+        float dx = t.x - b->x, dz = t.z - b->z, d2 = dx * dx + dz * dz; int vis = 0;
+        if (useLos && d2 < 48.0f * 48.0f) vis = hasLOS(from, t.eye) ? 1 : 0;
+        if (vis > bestVis || (vis == bestVis && d2 < bd)) { best = c; bestVis = vis; bd = d2; }
+    }
+    return best;
+}
 static void updateBots(float dt, int active) {
+    aiPathBudget = 2; aiCoverBudget = 1; aiLodN[0] = aiLodN[1] = aiLodN[2] = 0; aiRuns = 0;
     int di = S.diff; float ex = P.x + bfLeanOffX, ey = P.y + 1.37f - 0.45f * P.cr, ez = P.z + bfLeanOffZ;
     for (int i = 0; i < nbots; i++) {
         Bot *b = &bots[i];
@@ -8716,98 +8865,129 @@ static void updateBots(float dt, int active) {
         if (b->remote) continue;                                  /* el jugador remoto lo mueve la red */
         if (b->dummy) { b->state = BS_PATROL; b->crWant = 0; if (b->hitT > 0) b->hitT -= dt; continue; }   /* modo secreto: se quedan quietos */
         if (b->hitT > 0) b->hitT -= dt;
+        if (b->shotT > 0) b->shotT -= dt;
         if (b->coverT > 0) b->coverT -= dt;
 #ifdef PS2_ONLINE
         if (b->state != BS_HIDE) { b->plating = 0; b->plateT = 0; }      /* solo se pone placas agachado en cobertura */
 #endif
-        float dx = P.x - b->x, dz = P.z - b->z, dist = sqrtf(dx * dx + dz * dz);
-        float toYaw = atan2f(-dx, -dz), dyaw = toYaw - b->yaw;
-        dyaw = atan2f(sinf(dyaw), cosf(dyaw));
-        int pl = (mapF > 0 && P.y > mapF * 0.5f);      /* el jugador esta arriba */
-        float from[3] = { b->x, b->py + 1.55f, b->z }, to[3] = { ex, ey, ez };
-        /* VISION: dentro del cono (o de cerca) y con linea de vista libre. Agachado o acostado se te ve desde menos lejos. */
-        float vrange = 48.0f - 9.0f * clampf(P.cr, 0.0f, 2.0f);
-        int inCone = fabsf(dyaw) < DIFF_FOV[di] || (dist < VIS_PERI_R && fabsf(dyaw) < VIS_PERI_A) || dist < VIS_NEAR_R;
-        int sees = active && P.alive && dist < vrange && inCone && hasLOS(from, to);
-        /* OIDO: sin verte, el ruido les da una pista APROXIMADA (no tu posicion exacta) que se refresca cada 0,7 s; a traves de paredes llega la mitad de lejos */
-        if (!sees && active && P.alive && P.noise > 0.01f && dist < HEAR_R * P.noise) {
-            if (dist < HEAR_R * P.noise * (hasLOS(from, to) ? 1.0f : HEAR_WALL)) {
-                b->hearT -= dt;
-                if (b->hearT <= 0) {
-                    float e = 1.2f + 0.18f * dist; b->hearT = 0.7f;
-                    b->lkx = clampf(P.x + rndf(-e, e), -HALF + 1, HALF - 1); b->lkz = clampf(P.z + rndf(-e, e), -HALF + 1, HALF - 1); b->lkl = pl;
-                    if (b->state == BS_PATROL) { b->state = BS_SEARCH; b->timer = 0; }
-                }
-            }
-        }
-        /* Sin verte, el bot no sabe donde estas: apunta, se acerca o se cubre segun la ULTIMA posicion que vio u oyo (no tu posicion real). */
-        if (!sees && (b->lkx != 0 || b->lkz != 0)) {
-            dx = b->lkx - b->x; dz = b->lkz - b->z; dist = sqrtf(dx * dx + dz * dz);
-            toYaw = atan2f(-dx, -dz); dyaw = toYaw - b->yaw; dyaw = atan2f(sinf(dyaw), cosf(dyaw));
-        }
-        if (sees) {
-            b->lkx = P.x; b->lkz = P.z; b->lkl = pl; b->lost = 0;
-            if (b->state == BS_PATROL || b->state == BS_SEARCH) { b->state = BS_ALERT; b->react = DIFF_REACT[di] * rndf(0.8f, 1.3f); }
-        } else if (b->state == BS_ENGAGE || b->state == BS_ALERT) { b->lost += dt; if (b->lost > 2) { b->state = BS_SEARCH; b->lost = 0; } }
-        if (!active || !P.alive) { b->state = BS_PATROL; b->crWant = 0; }
+        int tg = b->aiInit ? b->tgt : -3; if (!botTgtValid(b, tg)) tg = botTgtPick(b, i, 0, ex, ey, ez);      /* -2 = no hay a quien atacar */
+        BTgt T; botTgtFill(tg, &T, ex, ey, ez);
+        float dx = T.x - b->x, dz = T.z - b->z, dist = sqrtf(dx * dx + dz * dz);
+        /* ---- AI LOD: nivel de IA segun distancia y situacion ---- */
+        int combat = b->hitT > 0 || b->state == BS_ALERT || b->state == BS_ENGAGE || b->state == BS_COVER || b->state == BS_HIDE || b->state == BS_PEEK;
+        int lod = !AILOD_ON ? 0 : ((!active || tg == -2) ? 2 : (combat || dist < AILOD_NEAR_R ? 0 : (dist < AILOD_MID_R ? 1 : 2)));
+        b->lod = lod; aiLodN[lod]++;
         float mx = 0, mz = 0, speed = 0, face = 1e9f;
-        if (b->state == BS_PATROL) {
-            float wx = b->wx - b->x, wz = b->wz - b->z, L = sqrtf(wx * wx + wz * wz);
-            b->timer += dt;
-            if (L < 1.2f || b->timer > 9) { if (rand() % 5 < 2) { float cx, cz; navCenter(navSnapL(P.x + rndf(-8, 8), P.z + rndf(-8, 8), pl), &cx, &cz); b->wx = cx; b->wz = cz; b->wl = pl; } else botWander(b); b->timer = 0; }
-            if (L < 1e-3f) L = 1; navSteer(b, b->wx, b->wz, b->wl, dt, &mx, &mz); speed = DIFF_SPEED[di] * 0.55f; face = atan2f(-mx, -mz);
-        } else if (b->state == BS_SEARCH) {
-            float wx = b->lkx - b->x, wz = b->lkz - b->z, L = sqrtf(wx * wx + wz * wz);
-            if (L < 1.5f) { b->timer += dt; if (b->timer > 1.2f) { b->state = BS_PATROL; b->timer = 0; botWander(b); } }
-            else { navSteer(b, b->lkx, b->lkz, b->lkl, dt, &mx, &mz); speed = DIFF_SPEED[di] * 0.8f; face = atan2f(-mx, -mz); }
-        } else if (b->state == BS_ALERT) {
-            face = toYaw; b->react -= dt;
-            if (b->react <= 0 && sees) { b->state = BS_ENGAGE; b->fireCD = rndf(0.1f, 0.3f); b->burst = 3 + rand() % 3; }
-        } else if (b->state == BS_COVER) {          /* corre hacia la cobertura */
-            float wx = b->coverX - b->x, wz = b->coverZ - b->z, L = sqrtf(wx * wx + wz * wz);
-            b->timer += dt; b->crWant = 0;
-            if (L < 0.6f || b->timer > 7) { b->state = BS_HIDE; b->timer = rndf(1.2f, 2.6f); }
-            else { navSteer(b, b->coverX, b->coverZ, 0, dt, &mx, &mz); speed = DIFF_SPEED[di] * 1.25f; face = atan2f(-mx, -mz); }
-        } else if (b->state == BS_HIDE) {           /* agachado detras de la cobertura */
-            face = toYaw; b->crWant = 1;
-#ifdef PS2_ONLINE
-            /* detras de la cobertura se pone placas una tras otra hasta llenar el chaleco o quedarse sin repuestos; si le disparan, para */
-            if (!b->plating && b->plates > 0 && b->armor < PLATE_HP * PLATE_N - 0.01f && b->hitT <= 0) { b->plating = 1; b->plateT = 0; snd_play3d(SND_TICK, b->x, b->z, 0.7f); }
-            if (b->plating) {
-                b->plateT += dt;
-                if (b->plateT >= BOT_PLATE_T) {
-                    b->armor = fminf(PLATE_HP * PLATE_N, b->armor + PLATE_HP); b->plates--; b->plateT = 0; snd_play3d(SND_BOUNCE, b->x, b->z, 0.8f);
-                    if (b->plates <= 0 || b->armor >= PLATE_HP * PLATE_N - 0.01f) { b->plating = 0; b->timer = rndf(0.5f, 1.2f); }
+        if (!b->aiInit) { b->aiInit = 1; b->aiT = 1e3f; } else b->aiT += dt;
+        static const float LOD_DT[3] = { 0.0f, AILOD_MID_DT, AILOD_FAR_DT };
+        if (lod == 0 || b->aiT >= LOD_DT[lod] * (0.85f + 0.03f * (i & 7))) {      /* toca decidir (los escalones por indice evitan que todos decidan en el mismo cuadro) */
+            const float adt = fminf(b->aiT, 0.5f); b->aiT = 0; aiRuns++;
+            b->tgT -= adt;
+            if (b->tgT <= 0) {      /* reelegir objetivo, prefiriendo al que tiene a la vista */
+                int ntg = botTgtPick(b, i, 1, ex, ey, ez); b->tgT = 0.35f;
+                if (ntg != tg) { tg = ntg; b->lost = 0; }
+                botTgtFill(tg, &T, ex, ey, ez); dx = T.x - b->x; dz = T.z - b->z; dist = sqrtf(dx * dx + dz * dz);
+            }
+            b->tgt = tg;
+            float toYaw = atan2f(-dx, -dz), dyaw = toYaw - b->yaw;
+            dyaw = atan2f(sinf(dyaw), cosf(dyaw));
+            int pl = (mapF > 0 && T.y > mapF * 0.5f);      /* el objetivo esta arriba */
+            float from[3] = { b->x, b->py + 1.55f, b->z }, to[3] = { T.eye[0], T.eye[1], T.eye[2] };
+            /* VISION: dentro del cono (o de cerca) y con linea de vista libre. Agachado o acostado se te ve desde menos lejos. */
+            float vrange = 48.0f - 9.0f * clampf(T.cr, 0.0f, 2.0f);
+            int inCone = fabsf(dyaw) < DIFF_FOV[di] || (dist < VIS_PERI_R && fabsf(dyaw) < VIS_PERI_A) || dist < VIS_NEAR_R;
+            int los = -1, sees = 0;      /* la linea de vista (cara) se calcula una sola vez y se comparte con el oido */
+            if (active && tg != -2 && dist < vrange && inCone) { los = hasLOS(from, to); sees = los; }
+            /* OIDO: sin verte, el ruido les da una pista APROXIMADA (no tu posicion exacta) que se refresca cada 0,7 s; a traves de paredes llega la mitad de lejos */
+            if (!sees && active && tg != -2 && T.noise > 0.01f && dist < HEAR_R * T.noise) {
+                if (los < 0) los = hasLOS(from, to);
+                if (dist < HEAR_R * T.noise * (los ? 1.0f : HEAR_WALL)) {
+                    b->hearT -= adt;
+                    if (b->hearT <= 0) {
+                        float e = 1.2f + 0.18f * dist; b->hearT = 0.7f;
+                        b->lkx = clampf(T.x + rndf(-e, e), -HALF + 1, HALF - 1); b->lkz = clampf(T.z + rndf(-e, e), -HALF + 1, HALF - 1); b->lkl = pl;
+                        if (b->state == BS_PATROL) { b->state = BS_SEARCH; b->timer = 0; }
+                    }
                 }
-            } else
-#endif
-            b->timer -= dt;
-            if (!b->plating && (b->timer <= 0 || (b->hitT > 0 && b->timer < 1.0f))) { b->state = BS_PEEK; b->peekT = rndf(1.6f, 3.0f); b->burst = 2 + rand() % 3; b->cov = rand() % 2; b->fireCD = 0.2f; }
-        } else if (b->state == BS_PEEK) {           /* asoma: apunta y dispara agachado o de pie */
-            face = toYaw; b->crWant = b->cov; b->peekT -= dt; b->fireCD -= dt;
-            if (sees && b->fireCD <= 0 && fabsf(dyaw) < 0.5f) { b->fireCD = DIFF_FIRE[di] * rndf(0.9f, 1.3f); botShoot(b, dist); b->fireEv = 1; if (--b->burst <= 0) b->peekT = 0; }
-            if (b->peekT <= 0) { if (b->hp < DIFF_HP[di] * 0.5f && rand() % 2) { b->state = BS_HIDE; b->timer = rndf(1.5f, 3.0f); } else { b->state = BS_ENGAGE; b->crWant = 0; } }
-        } else {
-            face = toYaw; b->strafeT -= dt;
-            if (b->strafeT <= 0) { b->strafe = -b->strafe; b->strafeT = rndf(0.7f, 1.6f); b->crWant = (rand() % 100) < 25; }
-            if (b->coverT <= 0 && ((b->hitT > 0 && rand() % 100 < 4) || b->hp < DIFF_HP[di] * 0.45f || rand() % 1000 < 4
-#ifdef PS2_ONLINE
-                                   || (b->plates > 0 && b->armor <= PLATE_HP * (PLATE_N - 1) + 0.01f && b->hitT > 0 && rand() % 100 < 8)      /* le han quitado una placa: se cubre para ponerse otra */
-#endif
-                                   )) {
-                float cx, cz; b->coverT = rndf(5, 9);
-                if (botFindCover(b, &cx, &cz)) { b->coverX = cx; b->coverZ = cz; b->state = BS_COVER; b->timer = 0; b->crWant = 0; }
             }
-            float rx = cosf(b->yaw), rz = -sinf(b->yaw), nx = dx / (dist + 1e-4f), nz = dz / (dist + 1e-4f);
-            float adv = dist > 16 ? 1 : (dist < 6 ? -0.8f : 0);
-            mx = rx * b->strafe * 0.8f + nx * adv; mz = rz * b->strafe * 0.8f + nz * adv; speed = DIFF_SPEED[di] * (b->crWant ? 0.35f : 0.7f);
-            b->fireCD -= dt; if (b->pause > 0) b->pause -= dt;
-            if (sees && b->fireCD <= 0 && b->pause <= 0 && fabsf(dyaw) < 0.5f) {
-                b->fireCD = DIFF_FIRE[di] * rndf(0.8f, 1.2f);
-                if (--b->burst <= 0) { b->pause = rndf(0.5f, 1.2f); b->burst = 3 + rand() % 3; }
-                botShoot(b, dist); b->fireEv = 1;
+            /* Sin verte, el bot no sabe donde estas: apunta, se acerca o se cubre segun la ULTIMA posicion que vio u oyo (no tu posicion real). */
+            if (!sees && (b->lkx != 0 || b->lkz != 0)) {
+                dx = b->lkx - b->x; dz = b->lkz - b->z; dist = sqrtf(dx * dx + dz * dz);
+                toYaw = atan2f(-dx, -dz); dyaw = toYaw - b->yaw; dyaw = atan2f(sinf(dyaw), cosf(dyaw));
             }
-        }
+            if (sees) {
+                b->lkx = T.x; b->lkz = T.z; b->lkl = pl; b->lost = 0;
+                if (b->state == BS_PATROL || b->state == BS_SEARCH) { b->state = BS_ALERT; b->react = DIFF_REACT[di] * rndf(0.8f, 1.3f); }
+            } else if (b->state == BS_ENGAGE || b->state == BS_ALERT) { b->lost += adt; if (b->lost > 2) { b->state = BS_SEARCH; b->lost = 0; } }
+            if (!active || tg == -2) { b->state = BS_PATROL; b->crWant = 0; }
+            mx = 0; mz = 0; speed = 0; face = 1e9f;
+            if (b->state == BS_PATROL) {
+                float wx = b->wx - b->x, wz = b->wz - b->z, L = sqrtf(wx * wx + wz * wz);
+                b->timer += adt;
+                if (L < 1.2f || b->timer > 9) {
+                    int r = rand() % 5; float cx, cz;
+                    if (r < 2 && tg != -2) { navCenter(navSnapL(T.x + rndf(-8, 8), T.z + rndf(-8, 8), pl), &cx, &cz); b->wx = cx; b->wz = cz; b->wl = pl; }      /* va hacia la zona del oponente */
+                    else if (b->team && r < 4 && P.alive) { int pl2 = (mapF > 0 && P.y > mapF * 0.5f); navCenter(navSnapL(P.x + rndf(-4, 4), P.z + rndf(-4, 4), pl2), &cx, &cz); b->wx = cx; b->wz = cz; b->wl = pl2; }      /* los aliados te escoltan */
+                    else botWander(b);
+                    b->timer = 0; }
+                if (L < 1e-3f) L = 1; navSteer(b, b->wx, b->wz, b->wl, adt, &mx, &mz); speed = DIFF_SPEED[di] * 0.55f; face = atan2f(-mx, -mz);
+            } else if (b->state == BS_SEARCH) {
+                float wx = b->lkx - b->x, wz = b->lkz - b->z, L = sqrtf(wx * wx + wz * wz);
+                if (L < 1.5f) { b->timer += adt; if (b->timer > 1.2f) { b->state = BS_PATROL; b->timer = 0; botWander(b); } }
+                else { navSteer(b, b->lkx, b->lkz, b->lkl, adt, &mx, &mz); speed = DIFF_SPEED[di] * 0.8f; face = atan2f(-mx, -mz); }
+            } else if (b->state == BS_ALERT) {
+                face = toYaw; b->react -= adt;
+                if (b->react <= 0 && sees) { b->state = BS_ENGAGE; b->fireCD = rndf(0.1f, 0.3f); b->burst = 3 + rand() % 3; }
+            } else if (b->state == BS_COVER) {          /* corre hacia la cobertura */
+                float wx = b->coverX - b->x, wz = b->coverZ - b->z, L = sqrtf(wx * wx + wz * wz);
+                b->timer += adt; b->crWant = 0;
+                if (L < 0.6f || b->timer > 7) { b->state = BS_HIDE; b->timer = rndf(1.2f, 2.6f); }
+                else { navSteer(b, b->coverX, b->coverZ, 0, adt, &mx, &mz); speed = DIFF_SPEED[di] * 1.25f; face = atan2f(-mx, -mz); }
+            } else if (b->state == BS_HIDE) {           /* agachado detras de la cobertura */
+                face = toYaw; b->crWant = 1;
+    #ifdef PS2_ONLINE
+                /* detras de la cobertura se pone placas una tras otra hasta llenar el chaleco o quedarse sin repuestos; si le disparan, para */
+                if (!b->plating && b->plates > 0 && b->armor < PLATE_HP * PLATE_N - 0.01f && b->hitT <= 0) { b->plating = 1; b->plateT = 0; snd_play3d(SND_TICK, b->x, b->z, 0.7f); }
+                if (b->plating) {
+                    b->plateT += adt;
+                    if (b->plateT >= BOT_PLATE_T) {
+                        b->armor = fminf(PLATE_HP * PLATE_N, b->armor + PLATE_HP); b->plates--; b->plateT = 0; snd_play3d(SND_BOUNCE, b->x, b->z, 0.8f);
+                        if (b->plates <= 0 || b->armor >= PLATE_HP * PLATE_N - 0.01f) { b->plating = 0; b->timer = rndf(0.5f, 1.2f); }
+                    }
+                } else
+    #endif
+                b->timer -= adt;
+                if (!b->plating && (b->timer <= 0 || (b->hitT > 0 && b->timer < 1.0f))) { b->state = BS_PEEK; b->peekT = rndf(1.6f, 3.0f); b->burst = 2 + rand() % 3; b->cov = rand() % 2; b->fireCD = 0.2f; }
+            } else if (b->state == BS_PEEK) {           /* asoma: apunta y dispara agachado o de pie */
+                face = toYaw; b->crWant = b->cov; b->peekT -= adt; b->fireCD -= adt;
+                if (sees && b->fireCD <= 0 && fabsf(dyaw) < 0.5f) { b->fireCD = DIFF_FIRE[di] * rndf(0.9f, 1.3f); botShoot(b, dist, tg); b->fireEv = 1; if (--b->burst <= 0) b->peekT = 0; }
+                if (b->peekT <= 0) { if (b->hp < DIFF_HP[di] * 0.5f && rand() % 2) { b->state = BS_HIDE; b->timer = rndf(1.5f, 3.0f); } else { b->state = BS_ENGAGE; b->crWant = 0; } }
+            } else {
+                face = toYaw; b->strafeT -= adt;
+                if (b->strafeT <= 0) { b->strafe = -b->strafe; b->strafeT = rndf(0.7f, 1.6f); b->crWant = (rand() % 100) < 25; }
+                if (b->coverT <= 0 && ((b->hitT > 0 && rand() % 100 < 4) || b->hp < DIFF_HP[di] * 0.45f || rand() % 1000 < 4
+    #ifdef PS2_ONLINE
+                                       || (b->plates > 0 && b->armor <= PLATE_HP * (PLATE_N - 1) + 0.01f && b->hitT > 0 && rand() % 100 < 8)      /* le han quitado una placa: se cubre para ponerse otra */
+    #endif
+                                       )) {
+                    if (aiCoverBudget > 0) {      /* como mucho una busqueda de cobertura por cuadro (si no toca, lo intenta el siguiente) */
+                        aiCoverBudget--;
+                        float cx, cz; b->coverT = rndf(5, 9);
+                        if (botFindCover(b, &cx, &cz)) { b->coverX = cx; b->coverZ = cz; b->state = BS_COVER; b->timer = 0; b->crWant = 0; }
+                    }
+                }
+                float rx = cosf(b->yaw), rz = -sinf(b->yaw), nx = dx / (dist + 1e-4f), nz = dz / (dist + 1e-4f);
+                float adv = dist > 16 ? 1 : (dist < 6 ? -0.8f : 0);
+                mx = rx * b->strafe * 0.8f + nx * adv; mz = rz * b->strafe * 0.8f + nz * adv; speed = DIFF_SPEED[di] * (b->crWant ? 0.35f : 0.7f);
+                b->fireCD -= adt; if (b->pause > 0) b->pause -= adt;
+                if (sees && b->fireCD <= 0 && b->pause <= 0 && fabsf(dyaw) < 0.5f) {
+                    b->fireCD = DIFF_FIRE[di] * rndf(0.8f, 1.2f);
+                    if (--b->burst <= 0) { b->pause = rndf(0.5f, 1.2f); b->burst = 3 + rand() % 3; }
+                    botShoot(b, dist, tg); b->fireEv = 1;
+                }
+            }
+            b->cmx = mx; b->cmz = mz; b->cspd = speed; b->cface = face;
+        } else { mx = b->cmx; mz = b->cmz; speed = b->cspd; face = b->cface; }      /* entre decisiones: sigue con la ultima direccion */
         if (face < 1e8f) { float d2 = atan2f(sinf(face - b->yaw), cosf(face - b->yaw)); b->yaw += clampf(d2, -dt * 6, dt * 6); }
         float ml = sqrtf(mx * mx + mz * mz);
         if (ml > 0.01f && speed > 0) {
@@ -8820,6 +9000,8 @@ static void updateBots(float dt, int active) {
         if (mapF > 0) { float g = groundAt(b->x, b->z, b->py + 0.05f, 0.3f); b->py += (g - b->py) * clampf(dt * 14, 0, 1); if (fabsf(g - b->py) < 0.003f) b->py = g; }      /* sube y baja escalones */
         { int mvg = (ml > 0.01f && speed > 0); if (mvg) b->walk += speed * dt * 2.6f; b->mv = mvg ? fminf(1.0f, b->mv + dt * 8) : fmaxf(0.0f, b->mv - dt * 8); }
     }
+    for (int k = 0; k < 3; k++) aiLodShow[k] = aiLodN[k];
+    aiRunsShow = aiRuns;
 }
 
 static void updatePlayer(const Pad *pd, float dt, int canAct) {
@@ -9635,6 +9817,7 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
 static const Model *botModel(int i) {
     if (bots[i].remote) return &voxM[0];
     int k = S.skin < 3 ? S.skin : i % 3;
+    if (bots[i].team == 1) k = (S.skin < 3 ? S.skin + 1 : i + 1) % 3;      /* los aliados llevan otra skin que los enemigos */
     return &voxM[k];
 }
 
@@ -9650,7 +9833,11 @@ static void updateRigs(float dt) {
         if (b->remote) { pitch = b->pitch; aim = b->aimW > 0.5f; }
         else {
             aim = b->state == BS_ALERT || b->state == BS_ENGAGE || b->state == BS_PEEK;
-            if (aim && P.alive) { float dx = P.x - b->x, dz = P.z - b->z; pitch = atan2f(P.y + 1.2f - (1.35f - 0.5f * b->rg.crouch), sqrtf(dx * dx + dz * dz) + 0.01f); }
+            if (aim) {      /* inclina el arma hacia su objetivo (el jugador o el soldado rival) */
+                float tx = P.x, tz = P.z, ty = P.y + 1.2f; int ok = P.alive && b->team == 0;
+                if (b->tgt >= 0 && b->tgt < nbots && bots[b->tgt].alive) { tx = bots[b->tgt].x; tz = bots[b->tgt].z; ty = bots[b->tgt].py + 1.2f; ok = 1; }
+                if (ok) { float dx = tx - b->x, dz = tz - b->z; pitch = atan2f(ty - (b->py + 1.35f - 0.5f * b->rg.crouch), sqrtf(dx * dx + dz * dz) + 0.01f); }
+            }
         }
         if (b->rl) { b->rlT += dt; if (b->rlT > 1.7f) b->rl = 0; }
         RigIn in = { vx, vz, b->yaw, pitch, b->rl ? clampf(b->rlT / 1.7f, 0, 1) : -1.0f, b->crWant, aim, b->fireEv, b->alive, mapF <= 0 && b->py > 0.12f };
@@ -9664,19 +9851,19 @@ static void drawBots(void) {
     for (int i = 0; i < nbots; i++) {
         const Bot *b = &bots[i];
         botOcc[i] = 0;
-        if (b->unused) continue;
+        if (b->unused || i == specSkip) continue;
 #ifdef PS2_ONLINE
         if (rds[i].on) {
             { const Ragdoll *q = &rds[i]; float mn[3] = { 1e9f, 1e9f, 1e9f }, mx[3] = { -1e9f, -1e9f, -1e9f };
               for (int k = 0; k < RD_NP; k++) for (int e = 0; e < 3; e++) { if (q->p[k][e] < mn[e]) mn[e] = q->p[k][e]; if (q->p[k][e] > mx[e]) mx[e] = q->p[k][e]; }
               if (ocHidden(mn[0] - 0.4f, mn[1] - 0.2f, mn[2] - 0.4f, mx[0] + 0.4f, mx[1] + 0.4f, mx[2] + 0.4f)) continue; }      /* cadaver con ragdoll: ligeramente enrojecido segun la herida */
             const Ragdoll *rd = &rds[i]; float tn = 1.0f - 0.28f * rd->wound;
-            rigOverG = rd->G; drawRig(botModel(i), &b->rg, 0.0f, -1.0f, 1, rd->p[RP_HIP][0], rd->p[RP_HIP][1], rd->p[RP_HIP][2], b->yaw, 1.0f, tn, tn, 0); rigOverG = NULL;
+            rigOverG = rd->G; drawRig(botModel(i), &b->rg, 0.0f, -1.0f, 1, rd->p[RP_HIP][0], rd->p[RP_HIP][1], rd->p[RP_HIP][2], b->yaw, b->team ? 0.8f : 1.0f, b->team ? tn * 0.95f : tn, b->team ? tn * 1.3f : tn, 0); rigOverG = NULL;
             continue;
         }
 #endif
         if ((botOcc[i] = (unsigned char)ocHidden(b->x - 0.7f, b->py, b->z - 0.7f, b->x + 0.7f, b->py + 2.0f, b->z + 0.7f))) continue;
-        drawRig(botModel(i), &b->rg, b->rg.dead ? 0.0f : b->pitch, b->rl ? clampf(b->rlT / 1.7f, 0, 1) : -1.0f, 1, b->x, b->py, b->z, b->yaw, 1, 1, 1, 0);
+        drawRig(botModel(i), &b->rg, b->rg.dead ? 0.0f : b->pitch, b->rl ? clampf(b->rlT / 1.7f, 0, 1) : -1.0f, 1, b->x, b->py, b->z, b->yaw, b->team ? 0.8f : 1.0f, b->team ? 0.95f : 1.0f, b->team ? 1.3f : 1.0f, 0);      /* aliados con tinte azulado */
 #ifdef PS2_ONLINE
         if (b->plating) {      /* placa en las manos: sube desde la cadera, se muestra y baja al chaleco */
             float u = clampf(b->plateT / BOT_PLATE_T, 0, 1), s = sinf(b->yaw), c = cosf(b->yaw), cq = b->rg.crouch;
@@ -10251,15 +10438,26 @@ static void drawHud(void) {
         drawTextC(SW * 0.5f, my * 0.7f + 19 * t, t * 0.65f, LAB_HINT, RGBA(143, 160, 166, 255));
     } else {
     snprintf(buf, 64, "RONDA %d", roundNo); drawTextC(SW * 0.5f, my * 0.7f, t * 1.0f, buf, RGBA(232, 236, 233, 255));
-    snprintf(buf, 64, "TU %d - %d BOTS", scoreMe, scoreBots); drawTextC(SW * 0.5f, my * 0.7f + 10 * t, t * 0.9f, buf, RGBA(91, 180, 214, 255));
-    snprintf(buf, 64, "VIVOS %d / %d", aliveBots(), nbots); drawTextC(SW * 0.5f, my * 0.7f + 19 * t, t * 0.7f, buf, RGBA(143, 160, 166, 255));
+    if (netMode) {
+        snprintf(buf, 64, "TU %d - %d BOTS", scoreMe, scoreBots); drawTextC(SW * 0.5f, my * 0.7f + 10 * t, t * 0.9f, buf, RGBA(91, 180, 214, 255));
+        snprintf(buf, 64, "VIVOS %d / %d", aliveBots(), nbots); drawTextC(SW * 0.5f, my * 0.7f + 19 * t, t * 0.7f, buf, RGBA(143, 160, 166, 255));
+    } else {      /* equipos: TU EQUIPO x - y ENEMIGO; vivos de cada equipo */
+        snprintf(buf, 64, "TU EQUIPO %d - %d ENEMIGO", scoreMe, scoreBots); drawTextC(SW * 0.5f, my * 0.7f + 10 * t, t * 0.9f, buf, RGBA(91, 180, 214, 255));
+        snprintf(buf, 64, "ALIADOS %d/%d   ENEMIGOS %d/%d", allyAlive() + (P.alive ? 1 : 0), allyTotal() + 1, enemyAlive(), enemyTotal()); drawTextC(SW * 0.5f, my * 0.7f + 19 * t, t * 0.7f, buf, RGBA(143, 160, 166, 255));
     }
+    }
+    if (!P.alive && mode == M_PLAYING && specIdx >= 0 && !sandbox && !netMode) drawTextC(SW * 0.5f, SH - my - 14 * t, t * 0.9f, allyAlive() > 1 ? "OBSERVANDO A UN ALIADO   X: SIGUIENTE" : "OBSERVANDO A UN ALIADO", RGBA(91, 180, 214, 255));
     /* radar */
     float rs = SH * 0.17f, rx0 = mx, ry0 = my, rc = rs * 0.5f, R = 24.0f;
     gfx_rect(rx0, ry0, rx0 + rs, ry0 + rs, RGBA(8, 11, 13, 150));
     gfx_rect(rx0 + rc - 0.5f, ry0, rx0 + rc + 0.5f, ry0 + rs, RGBA(255, 255, 255, 50)); gfx_rect(rx0, ry0 + rc - 0.5f, rx0 + rs, ry0 + rc + 0.5f, RGBA(255, 255, 255, 50));
     float ca = cosf(P.yaw), sa = sinf(P.yaw);
     for (int i = 0; i < nbots; i++) {
+        if (bots[i].alive && bots[i].team == 1) {      /* aliados: siempre en el radar, en azul */
+            float dx = bots[i].x - P.x, dz = bots[i].z - P.z, px = (dx * ca - dz * sa) / R * rc, py = (dx * sa + dz * ca) / R * rc;
+            if (fabsf(px) <= rc - 3 && fabsf(py) <= rc - 3) gfx_rect(rx0 + rc + px - 2, ry0 + rc + py - 2, rx0 + rc + px + 2, ry0 + rc + py + 2, RGBA(91, 180, 214, 255));
+            continue;
+        }
 #ifdef PS2_ONLINE
         if (!bots[i].alive || bfSpot[i] <= 0) continue;
 #else
@@ -10302,32 +10500,34 @@ static void drawTitle(void) {
     float t = SH / 224.0f;
     drawTextC(SW * 0.5f, SH * 0.1f, t * 4.5f, "PUNTO CERO", RGBA(232, 236, 233, 255));
     gfx_rect(SW * 0.5f - 60 * t, SH * 0.1f + 36 * t, SW * 0.5f + 60 * t, SH * 0.1f + 38 * t, RGBA(224, 128, 58, 255));
-    drawTextC(SW * 0.5f, SH * 0.1f + 42 * t, t * 0.9f, "TACTICO POR RONDAS - 1 CONTRA BOTS", RGBA(143, 160, 166, 255));
+    { char tb[64]; snprintf(tb, 64, "TACTICO POR RONDAS - %d CONTRA %d", (int)clampf((float)S.allies, 0, 3) + 1, (int)clampf((float)S.bots, 1, 4)); drawTextC(SW * 0.5f, SH * 0.1f + 42 * t, t * 0.9f, tb, RGBA(143, 160, 166, 255)); }
     drawTextC(SW * 0.5f, SH - 9 * t, t * 0.62f, "(C) 2026 LM STUDIOS - TODOS LOS DERECHOS RESERVADOS", RGBA(110, 124, 130, 255));
 }
 static char vbuf[8][24];
 static void settingsLabels(const char **vals) {
     vals[0] = DIFF_NAMES[S.diff];
-    snprintf(vbuf[1], 24, "%d", S.bots); vals[1] = vbuf[1];
-    snprintf(vbuf[2], 24, "%d", S.rounds); vals[2] = vbuf[2];
-    snprintf(vbuf[3], 24, "%d", S.sens); vals[3] = vbuf[3];
-    snprintf(vbuf[4], 24, "%d", S.fov); vals[4] = vbuf[4];
-    vals[5] = S.invertY ? "SI" : "NO"; vals[6] = CROSS_NAMES[S.cross];
-    snprintf(vbuf[7], 24, "%d", S.volume); vals[7] = vbuf[7]; vals[8] = SKIN_NAMES[S.skin]; vals[9] = CAM_NAMES[S.cam]; vals[10] = MAPS[S.map].name; vals[11] = NULL;
+    snprintf(vbuf[1], 24, "%d", (int)clampf((float)S.bots, 1, 4)); vals[1] = vbuf[1];
+    snprintf(vbuf[0], 24, "%d", (int)clampf((float)S.allies, 0, 3)); vals[2] = vbuf[0];
+    snprintf(vbuf[2], 24, "%d", S.rounds); vals[3] = vbuf[2];
+    snprintf(vbuf[3], 24, "%d", S.sens); vals[4] = vbuf[3];
+    snprintf(vbuf[4], 24, "%d", S.fov); vals[5] = vbuf[4];
+    vals[6] = S.invertY ? "SI" : "NO"; vals[7] = CROSS_NAMES[S.cross];
+    snprintf(vbuf[7], 24, "%d", S.volume); vals[8] = vbuf[7]; vals[9] = SKIN_NAMES[S.skin]; vals[10] = CAM_NAMES[S.cam]; vals[11] = MAPS[S.map].name; vals[12] = NULL;
 }
 static void changeSetting(int i, int dir) {
     switch (i) {
     case 0: S.diff = (S.diff + dir + 3) % 3; break;
-    case 1: S.bots = (int)clampf((float)(S.bots + dir), 1, 8); break;
-    case 2: { int k = 0; for (int j = 0; j < 4; j++) if (ROUND_OPTS[j] == S.rounds) k = j; S.rounds = ROUND_OPTS[(k + dir + 4) % 4]; break; }
-    case 3: S.sens = (int)clampf((float)(S.sens + dir), 1, 10); break;
-    case 4: S.fov = (int)clampf((float)(S.fov + dir * 5), 60, 100); break;
-    case 5: S.invertY = !S.invertY; break;
-    case 6: S.cross = (S.cross + dir + 5) % 5; break;
-    case 9: S.cam = !S.cam; break;
-    case 10: S.map = (S.map + dir + NMAPS) % NMAPS; if (settingsFrom == M_MENU) { curMap = S.map; buildWorld(); } break;
-    case 8: S.skin = (S.skin + dir + 4) % 4; break;
-    case 7: S.volume = (int)clampf((float)(S.volume + dir), 0, 10); snd_volume(S.volume); break;
+    case 1: S.bots = (int)clampf((float)(S.bots + dir), 1, 4); break;         /* enemigos: 1 a 4 */
+    case 2: S.allies = (int)clampf((float)(S.allies + dir), 0, 3); break;     /* aliados: 0 a 3 (contigo, hasta 4) */
+    case 3: { int k = 0; for (int j = 0; j < 4; j++) if (ROUND_OPTS[j] == S.rounds) k = j; S.rounds = ROUND_OPTS[(k + dir + 4) % 4]; break; }
+    case 4: S.sens = (int)clampf((float)(S.sens + dir), 1, 10); break;
+    case 5: S.fov = (int)clampf((float)(S.fov + dir * 5), 60, 100); break;
+    case 6: S.invertY = !S.invertY; break;
+    case 7: S.cross = (S.cross + dir + 5) % 5; break;
+    case 10: S.cam = !S.cam; break;
+    case 11: S.map = (S.map + dir + NMAPS) % NMAPS; if (settingsFrom == M_MENU) { curMap = S.map; buildWorld(); } break;
+    case 9: S.skin = (S.skin + dir + 4) % 4; break;
+    case 8: S.volume = (int)clampf((float)(S.volume + dir), 0, 10); snd_volume(S.volume); break;
     }
     snd_play(SND_TICK, 0.6f);
 }
@@ -10390,8 +10590,8 @@ static void cfgText(char *dst, const char *v, int max) {
 static int ceq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
 static void cfgSave(void) {
     char b[600];
-    snprintf(b, 600, "diff=%d\nbots=%d\nrounds=%d\nsens=%d\nfov=%d\ninvertY=%d\ncross=%d\nvolume=%d\nskin=%d\ncam=%d\nmap=%d\nres=%d\nbright=%d\nfull=%d\nname=%s\nip=%s\n",
-             S.diff, S.bots, S.rounds, S.sens, S.fov, S.invertY, S.cross, S.volume, S.skin, S.cam, S.map, vidCur.res, vidCur.bright, vidCur.full, myName, joinText);
+    snprintf(b, 600, "diff=%d\nbots=%d\nallies=%d\nrounds=%d\nsens=%d\nfov=%d\ninvertY=%d\ncross=%d\nvolume=%d\nskin=%d\ncam=%d\nmap=%d\nres=%d\nbright=%d\nfull=%d\nname=%s\nip=%s\n",
+             S.diff, S.bots, S.allies, S.rounds, S.sens, S.fov, S.invertY, S.cross, S.volume, S.skin, S.cam, S.map, vidCur.res, vidCur.bright, vidCur.full, myName, joinText);
     pc_cfg_save(b, (int)strlen(b));
 }
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -10404,7 +10604,8 @@ static void cfgLoad(void) {
         char *v = key; while (*v && *v != '=') v++; if (!*v) continue; *v++ = 0;
         int x = cfgI(v);
         if (ceq(key, "diff")) S.diff = clampi(x, 0, 2);
-        else if (ceq(key, "bots")) S.bots = clampi(x, 1, 8);
+        else if (ceq(key, "bots")) S.bots = clampi(x, 1, 4);
+        else if (ceq(key, "allies")) S.allies = clampi(x, 0, 3);
         else if (ceq(key, "rounds")) { for (int j = 0; j < 4; j++) if (ROUND_OPTS[j] == x) S.rounds = x; }
         else if (ceq(key, "sens")) S.sens = clampi(x, 1, 10);
         else if (ceq(key, "fov")) S.fov = clampi(x, 60, 100);
@@ -10450,14 +10651,21 @@ static void fpsTick(void) {
 static void fpsDraw(void) {
     if (!fpsOn) return;
     float t = SH / 224.0f, sc = t * 0.9f; char a[16], b[16];
-    char c[16]; snprintf(a, 16, "%d FPS", (int)(fpsShow + 0.5f)); snprintf(b, 16, "%d.%d MS", (int)fpsMs, (int)(fpsMs * 10) % 10); snprintf(c, 16, "OCL %d", ocCulledShow); char e[16]; snprintf(e, 16, "FRU %d", frCulledShow);
+    char c[16]; snprintf(a, 16, "%d FPS", (int)(fpsShow + 0.5f)); snprintf(b, 16, "%d.%d MS", (int)fpsMs, (int)(fpsMs * 10) % 10); snprintf(c, 16, "OCL %d", ocCulledShow); char e[16]; snprintf(e, 16, "FRU %d", frCulledShow); char ia[24]; snprintf(ia, 24, "IA %d/%d/%d D%d", aiLodShow[0], aiLodShow[1], aiLodShow[2], aiRunsShow);
+#ifdef PS2_ONLINE
+    char pt[24]; snprintf(pt, 24, "PT %d/%d R%d", ptN, BF_NP, ptEvShow);      /* particulas vivas / reserva, reciclajes por segundo */
+#endif
     float w = textW(a, sc) > textW(b, sc * 0.75f) ? textW(a, sc) : textW(b, sc * 0.75f), x1 = SW - 4 * t, x0 = x1 - w - 6 * t, y0 = 3 * t;
     u32c col = fpsShow >= 50 ? RGBA(111, 207, 151, 255) : (fpsShow >= 30 ? RGBA(224, 168, 58, 255) : RGBA(229, 72, 77, 255));
-    gfx_rect(x0, y0, x1, y0 + 8 * sc + 21 * sc * 0.75f + 8 * t, RGBA(0, 0, 0, 140));
+    gfx_rect(x0 - 10 * t, y0, x1, y0 + 8 * sc + 33 * sc * 0.75f + 10 * t, RGBA(0, 0, 0, 140));
     drawText(x1 - 3 * t - textW(a, sc) + sc * 0.5f * 0, y0 + 2 * t, sc, a, col);
     drawText(x1 - 3 * t - textW(b, sc * 0.75f), y0 + 3 * t + 8 * sc, sc * 0.75f, b, RGBA(143, 160, 166, 255));
     drawText(x1 - 3 * t - textW(c, sc * 0.75f), y0 + 4 * t + 8 * sc + 6 * sc * 0.75f, sc * 0.75f, c, RGBA(143, 160, 166, 255));
     drawText(x1 - 3 * t - textW(e, sc * 0.75f), y0 + 5 * t + 8 * sc + 12 * sc * 0.75f, sc * 0.75f, e, RGBA(143, 160, 166, 255));
+    drawText(x1 - 3 * t - textW(ia, sc * 0.75f), y0 + 6 * t + 8 * sc + 18 * sc * 0.75f, sc * 0.75f, ia, RGBA(143, 160, 166, 255));
+#ifdef PS2_ONLINE
+    drawText(x1 - 3 * t - textW(pt, sc * 0.75f), y0 + 7 * t + 8 * sc + 24 * sc * 0.75f, sc * 0.75f, pt, RGBA(143, 160, 166, 255));
+#endif
 }
 void game_frame(const Pad *pd, float dt) {
     float t = SH / 224.0f;
@@ -10487,6 +10695,9 @@ void game_frame(const Pad *pd, float dt) {
         if (netMode && ovl) gp = &nul;
 #endif
         updatePlayer(gp, dt, canAct);
+        if (!P.alive && canAct && !sandbox && !netMode && allyAlive() > 1 && (pd->pressed & (B_CROSS | B_R1))) {      /* observando: X o R1 pasa al siguiente aliado vivo */
+            int cur = specBot(); for (int k = 1; k <= nbots; k++) { int j = (cur + k) % nbots; if (bots[j].alive && bots[j].team == 1) { specIdx = j; break; } }
+        }
         snd_listener(P.x, P.z, P.yaw);
         updateWeapon(gp, dt, canAct);
         if (sandbox) {
@@ -10509,7 +10720,7 @@ void game_frame(const Pad *pd, float dt) {
         for (int i = 0; i < 4; i++) if (bfDT[i] > 0) bfDT[i] -= dt;
         for (int i = 0; i < nbots; i++) {      /* radar tactico: solo se ven los enemigos que tienes a la vista o que acaban de disparar */
             if (bfSpot[i] > 0) bfSpot[i] -= dt;
-            if (!bots[i].alive || !P.alive) continue;
+            if (!bots[i].alive || !P.alive || bots[i].team) continue;
             float o[3] = { P.x, P.y + 1.5f - 0.5f * P.cr, P.z }, d[3] = { bots[i].x - o[0], bots[i].py + 1.2f - o[1], bots[i].z - o[2] };
             float L = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
             if (L < 34 && L > 0.1f) { d[0] /= L; d[1] /= L; d[2] /= L; float tg[3] = { bots[i].x, bots[i].py + 1.2f, bots[i].z }; if (wallDist(o, d, L) >= L - 0.5f && !smokeBlocks(o, tg)) bfSpot[i] = fmaxf(bfSpot[i], 1.0f); }
@@ -10615,10 +10826,10 @@ void game_frame(const Pad *pd, float dt) {
         if (pd->pressed & B_CROSS) { if (sel == 0) labStart(); else if (sel == 3) { mode = M_MENU; sel = 0; } else labSet(sel, 1); }
         if (pd->pressed & B_CIRCLE) { mode = M_MENU; sel = 0; }
     } else if (mode == M_SETTINGS) {
-        orbit += dt * 0.08f; menuNav(pd, 12);
+        orbit += dt * 0.08f; menuNav(pd, 13);
         if (pd->pressed & B_LEFT) changeSetting(sel, -1);
-        if (pd->pressed & (B_RIGHT | (sel < 11 ? B_CROSS : 0))) changeSetting(sel, 1);
-        if (((pd->pressed & B_CROSS) && sel == 11) || (pd->pressed & B_CIRCLE)) {
+        if (pd->pressed & (B_RIGHT | (sel < 12 ? B_CROSS : 0))) changeSetting(sel, 1);
+        if (((pd->pressed & B_CROSS) && sel == 12) || (pd->pressed & B_CIRCLE)) {
             mode = settingsFrom;
 #ifdef PC_ONLINE
             sel = settingsFrom == M_PAUSE ? 1 : 2; cfgSave();
@@ -10712,7 +10923,8 @@ void game_frame(const Pad *pd, float dt) {
             camFovAdd = lerpf(camFovAdd, 5.0f * anRun * (1 - anAim) * (P.alive ? 1 : 0), clampf(dt * 5, 0, 1));
 #endif
         }
-        if (S.cam) { float cx, cy, cz; tpsCamera(&cx, &cy, &cz); setCamera(cx, cy, cz, P.yaw, P.pitch); }
+        if (!P.alive && mode == M_PLAYING && !sandbox && !netMode && specBot() >= 0) { const Bot *sb = &bots[specIdx]; setCamera(sb->x, sb->py + 1.55f - 0.5f * sb->rg.crouch, sb->z, sb->yaw, 0.0f); }      /* muerto: ves por los ojos de un aliado */
+        else if (S.cam) { float cx, cy, cz; tpsCamera(&cx, &cy, &cz); setCamera(cx, cy, cz, P.yaw, P.pitch); }
         else setCamera(P.x + bfLeanOffX, P.y + 1.62f - 0.5f * P.cr - bfLeanDrop + bob - (P.alive ? 0 : 1.1f), P.z + bfLeanOffZ, P.yaw, P.pitch);
 #ifdef PS2_ONLINE
         if (!S.cam) camRoll += bfLeanFrac * LEAN_ANG * LEAN_ROLL_K;        /* al asomarte la vista se inclina con el cuerpo */
@@ -10739,6 +10951,7 @@ void game_frame(const Pad *pd, float dt) {
         if (ocHidden(b->x0, b->bot, b->z0, b->x1, b->top, b->z1)) continue;
         obox((b->x0 + b->x1) * .5f, (b->top + b->bot) * .5f, (b->z0 + b->z1) * .5f, (b->x1 - b->x0) * .5f, (b->top - b->bot) * .5f, (b->z1 - b->z0) * .5f, 0, b->col);
     }
+    specSkip = (!P.alive && mode == M_PLAYING && !sandbox && !netMode) ? specBot() : -1;      /* el aliado que observas no se dibuja: la camara esta en su cabeza */
     drawBots();
 #ifdef PS2_ONLINE
     bfDrawNades();
@@ -10779,10 +10992,10 @@ void game_frame(const Pad *pd, float dt) {
         drawTextC(SW * 0.5f, SH * 0.92f - 6 * t, t * 0.7f, "IZQ/DER CAMBIAR   X ACEPTAR   O VOLVER", RGBA(143, 160, 166, 255));
     } else if (mode == M_SETTINGS) {
         drawMenuBg(); drawTextC(SW * 0.5f, SH * 0.08f, t * 3.0f, "CONFIGURACION", RGBA(232, 236, 233, 255));
-        const char *it[] = { "DIFICULTAD", "BOTS POR RONDA", "RONDAS PARA GANAR", "SENSIBILIDAD", "CAMPO DE VISION", "INVERTIR EJE Y", "COLOR DE MIRA", "VOLUMEN", "ENEMIGOS", "CAMARA", "MAPA", "VOLVER" };
-        const char *vals[12]; settingsLabels(vals);
-        drawList(it, vals, 12, SH * 0.15f);
-        drawTextC(SW * 0.5f, SH * 0.92f - 6 * t, t * 0.7f, "IZQ/DER CAMBIAR   O VOLVER", RGBA(143, 160, 166, 255));
+        const char *it[] = { "DIFICULTAD", "BOTS ENEMIGOS", "BOTS ALIADOS", "RONDAS PARA GANAR", "SENSIBILIDAD", "CAMPO DE VISION", "INVERTIR EJE Y", "COLOR DE MIRA", "VOLUMEN", "SKIN ENEMIGOS", "CAMARA", "MAPA", "VOLVER" };
+        const char *vals[13]; settingsLabels(vals);
+        drawList(it, vals, 13, SH * 0.13f);
+        { char tb[64]; snprintf(tb, 64, "TU EQUIPO: %d   ENEMIGOS: %d   IZQ/DER CAMBIAR   O VOLVER", (int)clampf((float)S.allies, 0, 3) + 1, (int)clampf((float)S.bots, 1, 4)); drawTextC(SW * 0.5f, SH - 8 * t, t * 0.7f, tb, RGBA(143, 160, 166, 255)); }
     } else if (mode == M_PAUSE && sandbox) {
         drawMenuBg(); drawTextC(SW * 0.5f, SH * 0.16f, t * 4.0f, "PAUSA", RGBA(232, 236, 233, 255)); drawTextC(SW * 0.5f, SH * 0.16f + 34 * t, t * 0.9f, "CAMPO DE PRUEBAS", RGBA(224, 128, 58, 255));
         const char *it[] = { "CONTINUAR", "SOLDADO NUEVO", "BORRAR SOLDADOS", "ENEMIGOS (SKIN)", "MENU PRINCIPAL" }, *vals[5] = { NULL, NULL, NULL, SKIN_NAMES[S.skin], NULL };
