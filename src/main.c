@@ -6449,7 +6449,7 @@ const char *net_last_error(void);                          /* texto del ultimo f
 
 #define PI 3.14159265f
 #define HALF 30.0f
-#define MAXBOX 140
+#define MAXBOX 170
 #define MAXBOT 10
 
 /* Aviso de autoria: tambien queda dentro del ejecutable */
@@ -6652,7 +6652,7 @@ static const char *CROSS_NAMES[] = { "BLANCO", "VERDE", "CIAN", "NARANJA", "ROJO
 static const u32c CROSS_COL[] = { RGBA(255, 255, 255, 255), RGBA(111, 207, 151, 255), RGBA(91, 214, 224, 255), RGBA(224, 128, 58, 255), RGBA(229, 72, 77, 255) };
 
 /* ---------- Mapa ---------- */
-typedef struct { float x0, x1, z0, z1, top; u32c col; } Box;
+typedef struct { float x0, x1, z0, z1, top, bot; u32c col; } Box;   /* bot = base de la caja (0 = apoyada en el suelo; > 0 = techo/losa flotante, como el piso de arriba de la casa) */
 static Box boxes[MAXBOX];
 static int navBuildPending = 1;
 static int nbox = 0;
@@ -6660,7 +6660,12 @@ static int nbox = 0;
 static void addBox(float x, float z, float w, float d, float h, u32c c) {
     if (nbox >= MAXBOX) return;
     Box *b = &boxes[nbox++];
-    b->x0 = x - w / 2; b->x1 = x + w / 2; b->z0 = z - d / 2; b->z1 = z + d / 2; b->top = h; b->col = c;
+    b->x0 = x - w / 2; b->x1 = x + w / 2; b->z0 = z - d / 2; b->z1 = z + d / 2; b->top = h; b->bot = 0; b->col = c;
+}
+static void addBoxY(float x, float z, float w, float d, float bot, float top, u32c c) {      /* caja con base elevada */
+    if (nbox >= MAXBOX) return;
+    Box *b = &boxes[nbox++];
+    b->x0 = x - w / 2; b->x1 = x + w / 2; b->z0 = z - d / 2; b->z1 = z + d / 2; b->top = top; b->bot = bot; b->col = c;
 }
 
 /* ===== inicio maps.h ===== */
@@ -6668,7 +6673,7 @@ static void addBox(float x, float z, float w, float d, float h, u32c c) {
 #ifndef MAPS_H
 #define MAPS_H
 
-#define NMAPS 8
+#define NMAPS 9
 typedef struct { float x, z; } SpawnPt;
 typedef struct { const char *name; u32c floorA, floorB, sky; int np, nb; SpawnPt ps[4], bs[10]; } MapDef;
 static int curMap = 0;
@@ -6810,7 +6815,41 @@ static void mapField(void) {
     B(-24, 18, 5, 0.9f, 0.5f, LOG); B(24, -18, 5, 0.9f, 0.5f, LOG); B(-5, 12.5f, 1.4f, 1.4f, 1.0f, LOG); B(5, -12.5f, 1.4f, 1.4f, 1.0f, LOG);
 }
 
-static void (*const MAP_BUILD[NMAPS])(void) = { mapBase, mapCity, mapIndustrial, mapWarehouse, mapBunker, mapDesert, mapComplex, mapField };
+/* 8: CASA - casa de dos pisos (reconstruccion de la referencia casa_referencia_ps2.obj, escala x1.5 en planta).
+ * Primer piso + escalera + segundo piso con huecos/pasillos. Usa cajas con base elevada (bot) para el techo del primer piso. */
+static const float CASA_BOX[][7] = {   /* cx, cz, ancho, fondo, base, techo, material */
+    {0.00f,0.00f,30.00f,21.00f,0.00f,0.03f,0}, {-15.00f,0.00f,0.33f,21.00f,0.00f,2.65f,1}, {15.00f,0.00f,0.33f,21.00f,0.00f,2.65f,1}, {-9.00f,-10.50f,12.00f,0.33f,0.00f,2.65f,1},
+    {7.20f,-10.50f,15.60f,0.33f,0.00f,2.65f,1}, {0.00f,10.50f,30.00f,0.33f,0.00f,2.65f,1}, {-6.90f,-5.48f,0.33f,3.45f,0.00f,2.65f,1}, {-6.90f,4.69f,0.33f,11.62f,0.00f,2.65f,1},
+    {-10.95f,-3.45f,8.10f,0.33f,0.00f,2.65f,1}, {-2.40f,3.45f,9.00f,0.33f,0.00f,2.65f,1}, {2.10f,-0.22f,0.33f,6.45f,0.00f,2.65f,1}, {2.10f,7.88f,0.33f,5.25f,0.00f,2.65f,1},
+    {8.55f,3.45f,12.90f,0.33f,0.00f,2.65f,1}, {-11.10f,-9.22f,5.85f,0.90f,0.00f,0.14f,2}, {-11.14f,-8.66f,5.32f,0.69f,0.00f,0.43f,2}, {-11.14f,-8.01f,5.32f,0.69f,0.00f,0.72f,2},
+    {-11.14f,-7.36f,5.32f,0.69f,0.00f,1.01f,2}, {-11.14f,-6.72f,5.32f,0.69f,0.00f,1.30f,2}, {-11.14f,-6.07f,5.32f,0.69f,0.00f,1.59f,2}, {-11.14f,-5.43f,5.32f,0.69f,0.00f,1.88f,2},
+    {-11.14f,-4.79f,5.32f,0.69f,0.00f,2.17f,2}, {-11.14f,-4.14f,5.32f,0.69f,0.00f,2.46f,2}, {-11.14f,-3.49f,5.32f,0.69f,0.00f,2.75f,2}, {-11.14f,-2.85f,5.32f,0.69f,0.00f,3.04f,2},
+    {-14.00f,-5.70f,0.34f,6.75f,0.00f,3.05f,1}, {-8.30f,-5.70f,0.35f,6.75f,0.00f,3.05f,1}, {-2.25f,-0.30f,7.50f,5.10f,0.00f,0.05f,3}, {9.08f,6.19f,9.15f,0.97f,0.00f,0.90f,4},
+    {5.48f,6.82f,1.95f,0.30f,0.90f,1.70f,6}, {8.10f,6.82f,2.40f,0.30f,0.90f,1.65f,6}, {11.40f,6.82f,3.30f,0.30f,0.90f,1.70f,6}, {13.12f,4.73f,1.65f,1.95f,0.00f,2.00f,6},
+    {8.48f,-0.53f,4.95f,2.85f,0.75f,1.00f,4}, {6.71f,-2.59f,0.83f,0.82f,0.00f,0.72f,4}, {10.61f,-2.59f,0.83f,0.82f,0.00f,0.72f,4}, {6.71f,1.61f,0.83f,0.82f,0.00f,0.72f,4},
+    {10.61f,1.61f,0.83f,0.82f,0.00f,0.72f,4}, {-8.06f,-6.75f,1.27f,1.50f,0.00f,0.85f,4}, {-14.59f,0.00f,0.83f,21.00f,3.20f,3.38f,0}, {3.45f,0.00f,23.10f,21.00f,3.20f,3.38f,0},
+    {-11.14f,-10.09f,6.07f,0.82f,3.20f,3.38f,0}, {-11.14f,4.12f,6.07f,12.75f,3.20f,3.38f,0}, {-15.00f,0.00f,0.33f,21.00f,3.38f,6.03f,1}, {15.00f,0.00f,0.33f,21.00f,3.38f,6.03f,1},
+    {0.00f,-10.50f,30.00f,0.33f,3.38f,6.03f,1}, {0.00f,10.50f,30.00f,0.33f,3.38f,6.03f,1}, {-4.05f,6.00f,0.33f,9.00f,3.38f,6.03f,1}, {0.30f,1.50f,8.70f,0.33f,3.38f,6.03f,1},
+    {-9.53f,3.75f,10.95f,0.33f,3.38f,6.03f,1}, {-3.30f,-1.20f,8.10f,0.33f,3.38f,6.03f,1}, {0.75f,-6.90f,0.33f,7.20f,3.38f,6.03f,1}, {0.75f,1.12f,0.33f,5.25f,3.38f,6.03f,1},
+    {7.88f,3.75f,14.25f,0.33f,3.38f,6.03f,1}, {7.80f,-8.10f,0.33f,4.80f,3.38f,6.03f,1}, {7.80f,-0.22f,0.33f,7.95f,3.38f,6.03f,1}, {9.00f,7.12f,0.33f,6.75f,3.38f,6.03f,1},
+    {12.00f,3.75f,6.00f,0.33f,3.38f,6.03f,1}, {-11.14f,-2.55f,6.07f,0.75f,3.20f,3.38f,2}, {11.93f,4.82f,4.05f,0.64f,3.38f,3.62f,2}, {11.93f,5.42f,4.05f,0.64f,3.38f,3.86f,2},
+    {11.93f,6.02f,4.05f,0.64f,3.38f,4.10f,2}, {11.93f,6.62f,4.05f,0.65f,3.38f,4.34f,2}, {11.93f,7.22f,4.05f,0.64f,3.38f,4.58f,2}, {11.93f,7.82f,4.05f,0.64f,3.38f,4.82f,2},
+    {11.93f,8.42f,4.05f,0.64f,3.38f,5.06f,2}, {11.93f,9.02f,4.05f,0.64f,3.38f,5.30f,2}, {11.93f,9.62f,4.05f,0.65f,3.38f,5.54f,2}, {11.93f,9.94f,4.80f,0.53f,3.38f,5.63f,2},
+    {-1.12f,6.97f,3.15f,4.65f,3.38f,3.68f,4}, {-1.12f,7.50f,2.70f,3.00f,3.68f,3.85f,5}, {1.57f,7.57f,1.35f,1.35f,3.38f,4.05f,4}, {3.23f,7.73f,1.05f,1.05f,3.38f,3.80f,4},
+    {4.20f,-1.05f,2.10f,3.30f,3.38f,3.68f,4}, {9.52f,-2.70f,7.05f,0.90f,3.38f,3.95f,4}, {13.20f,-0.23f,1.20f,5.55f,3.38f,5.10f,6}, {11.33f,-7.05f,4.65f,3.90f,3.38f,3.70f,4},
+    {11.32f,-8.10f,4.05f,1.20f,3.70f,3.92f,5}, {-4.95f,-6.90f,1.50f,1.20f,3.38f,3.95f,4}, {-3.52f,0.97f,4.95f,3.15f,0.00f,3.42f,3}
+};
+static const u32c CASA_COL[7] = { RGBA(116, 82, 54, 255), RGBA(160, 154, 144, 255), RGBA(78, 64, 52, 255), RGBA(136, 44, 40, 255), RGBA(98, 72, 50, 255), RGBA(132, 120, 94, 255), RGBA(120, 124, 118, 255) };
+static void mapCasa(void) {
+    const u32c OUT = RGBA(118, 112, 100, 255), CRATE = RGBA(142, 106, 67, 255), ROCK = RGBA(122, 118, 108, 255), LOGC = RGBA(104, 78, 52, 255);
+    outer(OUT);
+    for (unsigned i = 0; i < sizeof CASA_BOX / sizeof CASA_BOX[0]; i++) { const float *c = CASA_BOX[i]; addBoxY(c[0], c[1], c[2], c[3], c[4], c[5], CASA_COL[(int)c[6]]); }
+    B(-22, -20, 3, 3, 2.0f, ROCK); B(23, -22, 3.6f, 3, 2.4f, ROCK); B(-24, 17, 3.6f, 3, 2.4f, ROCK); B(22, 21, 3, 3, 2.0f, ROCK);
+    B(-20, 4, 1.6f, 1.6f, 1.2f, CRATE); B(-20, 6, 1.6f, 1.6f, 1.2f, CRATE); B(21, -3, 1.6f, 1.6f, 1.2f, CRATE); B(21, 0, 1.6f, 1.6f, 1.2f, CRATE); B(0, 19, 2.4f, 1.2f, 1.0f, CRATE);
+    B(-14, 22, 5, 0.9f, 0.5f, LOGC); B(14, -20, 5, 0.9f, 0.5f, LOGC); B(-16, -16, 1.4f, 1.4f, 1.0f, LOGC); B(17, 17, 1.4f, 1.4f, 1.0f, LOGC);
+}
+
+static void (*const MAP_BUILD[NMAPS])(void) = { mapBase, mapCity, mapIndustrial, mapWarehouse, mapBunker, mapDesert, mapComplex, mapField, mapCasa };
 
 #define SP(x, z) { (x), (z) }
 static const MapDef MAPS[NMAPS] = {
@@ -6830,6 +6869,8 @@ static const MapDef MAPS[NMAPS] = {
    { SP(-0.5f,25.5f), SP(-7.5f,11.5f), SP(7.5f,11.5f) }, { SP(-0.5f,-28.5f), SP(-18.5f,-19.5f), SP(17.5f,-19.5f), SP(-18.5f,14.5f), SP(15.5f,16.5f), SP(-3.0f,-10.0f), SP(3.0f,10.0f), SP(-28.5f,-2.5f) } },
  { "COMBATE EXTERIOR", RGBA(120, 124, 92, 255), RGBA(132, 136, 102, 255), RGBA(184, 196, 190, 255), 3, 8,
    { SP(0.0f,28.0f), SP(-14.0f,24.0f), SP(14.0f,24.0f) }, { SP(0.0f,-28.0f), SP(-14.0f,-24.0f), SP(14.0f,-26.0f), SP(-25.0f,-15.0f), SP(25.0f,-13.0f), SP(-10.0f,-14.0f), SP(10.0f,-14.0f), SP(0.0f,-10.0f) } },
+ { "CASA", RGBA(122, 130, 100, 255), RGBA(134, 142, 110, 255), RGBA(190, 204, 216, 255), 3, 8,
+   { SP(0.0f,-24.0f), SP(-22.0f,-20.0f), SP(22.0f,-22.0f) }, { SP(-5.5f,-4.5f), SP(9.5f,-4.5f), SP(0.5f,2.5f), SP(0.0f,26.0f), SP(-24.0f,25.0f), SP(24.0f,25.0f), SP(-22.0f,6.0f), SP(22.0f,4.0f) } },
 };
 #define SKY (MAPS[curMap].sky)
 #endif
@@ -6847,14 +6888,14 @@ static float groundAt(float x, float z, float feet, float r) {
     float g = 0;
     for (int i = 0; i < nbox; i++) {
         Box *b = &boxes[i];
-        if (b->top > g && b->top <= feet + STEP && x > b->x0 - r * .5f && x < b->x1 + r * .5f && z > b->z0 - r * .5f && z < b->z1 + r * .5f) g = b->top;
+        if (b->top > g && b->top <= feet + STEP && b->bot <= feet + STEP && x > b->x0 - r * .5f && x < b->x1 + r * .5f && z > b->z0 - r * .5f && z < b->z1 + r * .5f) g = b->top;
     }
     return g;
 }
 static int blockedAt(float x, float z, float feet, float r) {
     for (int i = 0; i < nbox; i++) {
         Box *b = &boxes[i];
-        if (b->top > feet + STEP && x > b->x0 - r && x < b->x1 + r && z > b->z0 - r && z < b->z1 + r) return 1;
+        if (b->top > feet + STEP && b->bot < feet + 1.75f && x > b->x0 - r && x < b->x1 + r && z > b->z0 - r && z < b->z1 + r) return 1;
     }
     return 0;
 }
@@ -6886,7 +6927,7 @@ static float raySphere(const float *o, const float *d, const float *c, float r) 
 static float wallDist(const float *o, const float *d, float max) {
     float best = max;
     for (int i = 0; i < nbox; i++) {
-        float mn[3] = { boxes[i].x0, 0, boxes[i].z0 }, mx[3] = { boxes[i].x1, boxes[i].top, boxes[i].z1 };
+        float mn[3] = { boxes[i].x0, boxes[i].bot, boxes[i].z0 }, mx[3] = { boxes[i].x1, boxes[i].top, boxes[i].z1 };
         float t = rayBox(o, d, mn, mx);
         if (t < best) best = t;
     }
@@ -7035,7 +7076,7 @@ static void occBuild(void) {
     for (int j = 0; j < OC_H; j++) for (int i = 0; i < OC_W; i++) ocFar[j][i] = 1e30f;
     ocCulledShow = ocCulled; ocCulled = 0; ocOn = 1; frCulledShow = frCulled; frCulled = 0;
     for (int k = 0; k < nbox; k++) {
-        const Box *b = &boxes[k]; if (b->top < 0.6f) continue;
+        const Box *b = &boxes[k]; if (b->top < 0.6f || b->bot > 0.3f) continue;      /* las losas flotantes no ocultan lo de abajo */
         if (camZ < b->z0) ocFace(b->x0, b->z0, b->x1, b->z0, b->top); else if (camZ > b->z1) ocFace(b->x0, b->z1, b->x1, b->z1, b->top);
         if (camX < b->x0) ocFace(b->x0, b->z0, b->x0, b->z1, b->top); else if (camX > b->x1) ocFace(b->x1, b->z0, b->x1, b->z1, b->top);
     }
@@ -7763,7 +7804,7 @@ static void bloodUpdate(float dt) {
             if (d->y <= 0) { decalAdd(d->x, 0, d->z, 0, d->sz); d->on = 0; break; }
             for (int j = 0; j < nbox; j++) {
                 const Box *b = &boxes[j];
-                if (d->x <= b->x0 || d->x >= b->x1 || d->z <= b->z0 || d->z >= b->z1 || d->y >= b->top) continue;
+                if (d->x <= b->x0 || d->x >= b->x1 || d->z <= b->z0 || d->z >= b->z1 || d->y >= b->top || d->y <= b->bot) continue;
                 if (oy >= b->top) decalAdd(d->x, b->top, d->z, 0, d->sz);
                 else if (ox <= b->x0) decalAdd(b->x0, d->y, d->z, 2, d->sz);
                 else if (ox >= b->x1) decalAdd(b->x1, d->y, d->z, 1, d->sz);
@@ -7832,7 +7873,7 @@ static void rdCollide(Ragdoll *rd, int i, const Box **nb, int nn) {
     float vy = p[1] - q[1], vh = sqrtf((p[0] - q[0]) * (p[0] - q[0]) + (p[2] - q[2]) * (p[2] - q[2])) / RD_H;
     for (int j = 0; j < nn; j++) {
         const Box *b = nb[j];
-        if (p[0] < b->x0 - r || p[0] > b->x1 + r || p[2] < b->z0 - r || p[2] > b->z1 + r || p[1] - r >= b->top) continue;
+        if (p[0] < b->x0 - r || p[0] > b->x1 + r || p[2] < b->z0 - r || p[2] > b->z1 + r || p[1] - r >= b->top || p[1] + r <= b->bot) continue;
         float up = b->top + r - p[1], pl = p[0] - (b->x0 - r), pr = (b->x1 + r) - p[0], zl = p[2] - (b->z0 - r), zr = (b->z1 + r) - p[2];
         float mh = pl; int ax = 2; if (pr < mh) { mh = pr; ax = 1; } if (zl < mh) { mh = zl; ax = 4; } if (zr < mh) { mh = zr; ax = 3; }
         if (up <= mh || up < 0.12f) {
@@ -8571,7 +8612,7 @@ static int botFindCover(const Bot *b, float *ox, float *oz) {
     float eye[3] = { P.x, P.y + 1.4f - 0.4f * P.cr, P.z }, best = 1e9f; int found = 0;
     for (int i = 0; i < nbox; i++) {
         const Box *bx = &boxes[i];
-        if (bx->top < 0.9f || bx->top > 3.6f) continue;
+        if (bx->top < 0.9f || bx->top > 3.6f || bx->bot > 0.3f) continue;
         float cx = (bx->x0 + bx->x1) * 0.5f, cz = (bx->z0 + bx->z1) * 0.5f;
         float bd = sqrtf((cx - b->x) * (cx - b->x) + (cz - b->z) * (cz - b->z)); if (bd > 20) continue;
         float dx = cx - P.x, dz = cz - P.z, L = sqrtf(dx * dx + dz * dz) + 1e-4f; dx /= L; dz /= L;
@@ -10588,8 +10629,8 @@ void game_frame(const Pad *pd, float dt) {
     drawFloor();
     for (int i = 0; i < nbox; i++) {
         Box *b = &boxes[i];
-        if (ocHidden(b->x0, 0, b->z0, b->x1, b->top, b->z1)) continue;
-        obox((b->x0 + b->x1) * .5f, b->top * .5f, (b->z0 + b->z1) * .5f, (b->x1 - b->x0) * .5f, b->top * .5f, (b->z1 - b->z0) * .5f, 0, b->col);
+        if (ocHidden(b->x0, b->bot, b->z0, b->x1, b->top, b->z1)) continue;
+        obox((b->x0 + b->x1) * .5f, (b->top + b->bot) * .5f, (b->z0 + b->z1) * .5f, (b->x1 - b->x0) * .5f, (b->top - b->bot) * .5f, (b->z1 - b->z0) * .5f, 0, b->col);
     }
     drawBots();
 #ifdef PS2_ONLINE
