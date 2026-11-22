@@ -8499,7 +8499,7 @@ static void mpBeginRound(int round, int newMatch, int tag, float mx, float mz, f
 static void mpHostBeginRound(int newMatch) {
     if (newMatch) { hostScore = cliScore = 0; roundNo = 1; if (curMap != S.map) { curMap = S.map; buildWorld(); } }
     const MapDef *md = &MAPS[curMap]; float hx = md->ps[(roundNo - 1) % md->np].x, hz = md->ps[(roundNo - 1) % md->np].z, hyaw = openYaw(hx, hz, 0);
-    float cx = md->bs[(roundNo - 1) % md->nb].x, cz = md->bs[(roundNo - 1) % md->nb].z, cyaw = openYaw(cx, cz);
+    float cx = md->bs[(roundNo - 1) % md->nb].x, cz = md->bs[(roundNo - 1) % md->nb].z, cyaw = openYaw(cx, cz, 0);
     mpTag = (mpTag + 1) & 255;
     unsigned char d[32]; Pk q; pkBegin(&q, 0);
     q.n = 0; pk8(&q, roundNo); pk8(&q, newMatch); pk8(&q, mpTag); pk8(&q, hostScore); pk8(&q, cliScore);
