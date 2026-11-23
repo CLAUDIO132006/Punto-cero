@@ -6394,6 +6394,7 @@ void gfx_rect(float x1, float y1, float x2, float y2, u32c c);
 /* Poligono convexo como abanico de triangulos (v0 es el centro): n vertices = n quads para el GIF en vez de 3*(n-2). Misma triangulacion que
  * dibujar (v0,vi,vi+1) con gfx_tri, asi que el resultado en pantalla es identico. n <= 30. */
 void gfx_fan(int n, const float *x, const float *y, const int *z, const u32c *c);
+void gfx_vsync_strict(int on);      /* interpolacion de fotogramas: pide cambio de buffer siempre en vblank (el gsKit_sync_flip normal ya lo hace) */
 void pad_init(void);
 void pad_poll(Pad *p);
 void audio_init(void);   /* PS2: carga audsrv; PC: nada */
@@ -6631,11 +6632,11 @@ static void rigReload(const Rig *g, SkPose *o, float u) {
 
 
 /* ---------- Configuracion ---------- */
-typedef struct { int diff, bots, rounds, sens, fov, invertY, cross, volume, skin, cam, map, allies; } Settings;      /* bots: enemigos (1-4); allies: aliados que te acompanan (0-3) */
+typedef struct { int diff, bots, rounds, sens, fov, invertY, cross, volume, skin, cam, map, allies, interp; } Settings;      /* bots: enemigos (1-4); allies: aliados que te acompanan (0-3) */
 #ifdef _EE
-static Settings S = { 1, 4, 5, 5, 80, 0, 0, 7, 0, 0, 0, 3 };   /* PS2: primera persona */
+static Settings S = { 1, 4, 5, 5, 80, 0, 0, 7, 0, 0, 0, 3, 0 };   /* PS2: primera persona */
 #else
-static Settings S = { 1, 4, 5, 5, 80, 0, 0, 7, 0, 1, 0, 3 };
+static Settings S = { 1, 4, 5, 5, 80, 0, 0, 7, 0, 1, 0, 3, 0 };
 #endif
 static const char *DIFF_NAMES[] = { "FACIL", "NORMAL", "DIFICIL" };
 static const float DIFF_HP[] = { 70, 100, 130 }, DIFF_REACT[] = { 0.85f, 0.5f, 0.28f };
@@ -10603,10 +10604,11 @@ static void drawHud(void) {
 /* ---------- Menus ---------- */
 typedef struct { const char *label; } Item;
 static void drawMenuBg(void) { gfx_rect(0, 0, SW, SH, RGBA(8, 11, 13, 150)); }
+static float listRs = 1.0f;      /* escala de la altura de las filas (la lista de configuracion es mas larga) */
 static void drawList(const char **items, const char **vals, int n, float y0) {
-    float t = SH / 224.0f, w = SW * 0.62f, x0 = (SW - w) * 0.5f, rh = 12 * t;
+    float t = SH / 224.0f, w = SW * 0.62f, x0 = (SW - w) * 0.5f, rh = 12 * t * listRs;
     for (int i = 0; i < n; i++) {
-        float y = y0 + i * (rh + 2 * t); int on = i == sel;
+        float y = y0 + i * (rh + 2 * t * listRs); int on = i == sel;
         gfx_rect(x0, y, x0 + w, y + rh, on ? RGBA(224, 128, 58, 255) : RGBA(19, 26, 31, 230));
         u32c tc = on ? RGBA(23, 16, 10, 255) : RGBA(232, 236, 233, 255);
         drawText(x0 + 5 * t, y + 2.5f * t, t * 1.0f, items[i], tc);
@@ -10632,7 +10634,7 @@ static void settingsLabels(const char **vals) {
     snprintf(vbuf[3], 24, "%d", S.sens); vals[4] = vbuf[3];
     snprintf(vbuf[4], 24, "%d", S.fov); vals[5] = vbuf[4];
     vals[6] = S.invertY ? "SI" : "NO"; vals[7] = CROSS_NAMES[S.cross];
-    snprintf(vbuf[7], 24, "%d", S.volume); vals[8] = vbuf[7]; vals[9] = SKIN_NAMES[S.skin]; vals[10] = CAM_NAMES[S.cam]; vals[11] = MAPS[S.map].name; vals[12] = NULL;
+    snprintf(vbuf[7], 24, "%d", S.volume); vals[8] = vbuf[7]; vals[9] = SKIN_NAMES[S.skin]; vals[10] = CAM_NAMES[S.cam]; vals[11] = MAPS[S.map].name; vals[12] = S.interp ? "SI" : "NO"; vals[13] = NULL;
 }
 static void changeSetting(int i, int dir) {
     switch (i) {
@@ -10648,6 +10650,7 @@ static void changeSetting(int i, int dir) {
     case 11: S.map = (S.map + dir + NMAPS) % NMAPS; if (settingsFrom == M_MENU) { curMap = S.map; buildWorld(); } break;
     case 9: S.skin = (S.skin + dir + 4) % 4; break;
     case 8: S.volume = (int)clampf((float)(S.volume + dir), 0, 10); snd_volume(S.volume); break;
+    case 12: S.interp = !S.interp; break;      /* interpolacion de fotogramas: logica a 30 Hz, imagen a 60 */
     }
     snd_play(SND_TICK, 0.6f);
 }
@@ -10710,8 +10713,8 @@ static void cfgText(char *dst, const char *v, int max) {
 static int ceq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
 static void cfgSave(void) {
     char b[600];
-    snprintf(b, 600, "diff=%d\nbots=%d\nallies=%d\nrounds=%d\nsens=%d\nfov=%d\ninvertY=%d\ncross=%d\nvolume=%d\nskin=%d\ncam=%d\nmap=%d\nres=%d\nbright=%d\nfull=%d\nname=%s\nip=%s\n",
-             S.diff, S.bots, S.allies, S.rounds, S.sens, S.fov, S.invertY, S.cross, S.volume, S.skin, S.cam, S.map, vidCur.res, vidCur.bright, vidCur.full, myName, joinText);
+    snprintf(b, 600, "diff=%d\nbots=%d\nallies=%d\nrounds=%d\nsens=%d\nfov=%d\ninvertY=%d\ncross=%d\nvolume=%d\nskin=%d\ncam=%d\nmap=%d\ninterp=%d\nres=%d\nbright=%d\nfull=%d\nname=%s\nip=%s\n",
+             S.diff, S.bots, S.allies, S.rounds, S.sens, S.fov, S.invertY, S.cross, S.volume, S.skin, S.cam, S.map, S.interp, vidCur.res, vidCur.bright, vidCur.full, myName, joinText);
     pc_cfg_save(b, (int)strlen(b));
 }
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -10726,6 +10729,7 @@ static void cfgLoad(void) {
         if (ceq(key, "diff")) S.diff = clampi(x, 0, 2);
         else if (ceq(key, "bots")) S.bots = clampi(x, 1, 4);
         else if (ceq(key, "allies")) S.allies = clampi(x, 0, 3);
+        else if (ceq(key, "interp")) S.interp = x != 0;
         else if (ceq(key, "rounds")) { for (int j = 0; j < 4; j++) if (ROUND_OPTS[j] == x) S.rounds = x; }
         else if (ceq(key, "sens")) S.sens = clampi(x, 1, 10);
         else if (ceq(key, "fov")) S.fov = clampi(x, 60, 100);
@@ -10787,10 +10791,71 @@ static void fpsDraw(void) {
     drawText(x1 - 3 * t - textW(pt, sc * 0.75f), y0 + 7 * t + 8 * sc + 24 * sc * 0.75f, sc * 0.75f, pt, RGBA(143, 160, 166, 255));
 #endif
 }
+
+/* ---------- Interpolacion de fotogramas (opcion "INTERPOLACION 60") ----------
+ * Con la opcion activa, la logica (jugador, IA, fisica, armas, granadas, rondas) se ejecuta UNA de cada DOS pasadas por game_frame, con el tiempo real
+ * transcurrido (mismas velocidades que antes: no se acelera nada) y solo se dibuja en cada pasada. En la pasada de logica la imagen muestra el punto
+ * medio entre el estado anterior y el nuevo (Lerp 0.5); en la pasada intermedia muestra el estado nuevo tal cual. Asi la imagen avanza en pasos iguales
+ * a 60 Hz con un retraso fijo de medio paso de logica (~17 ms).
+ * Lo que se interpola (solo al DIBUJAR; antes de dibujar se sustituyen los valores y despues se restauran los reales, asi la fisica, las colisiones y la IA
+ * nunca ven valores interpolados): jugador y camara (posicion, giro, cabeceo, balanceo, agachado, asomarse), soldados (posicion, giro, fase de paso) y
+ * granadas. El esqueleto de los soldados y las particulas/sangre/ragdolls se actualizan en CADA pasada con el tiempo del cuadro (son solo visuales).
+ * Lo que NO se interpola: el estado de la logica en si, armas/HUD (cambian a 30 Hz), el modo online (se desactiva solo: ahi la red manda a su ritmo), y
+ * cualquier salto grande (reaparicion, inicio de ronda): si algo se movio mas de 3 m entre dos pasos se dibuja en su posicion nueva sin mezclar.
+ * Si el equipo no llega a ~36 cuadros/s reales, vuelve solo a un paso de logica por cuadro (como sin la opcion) y retoma al recuperarse. */
+typedef struct { float x, y, z, yaw, pitch, bob, cr, lox, loz, ldrop, lfrac; } IpP;
+typedef struct { float x, z, py, yaw, walk, mv; } IpB;
+typedef struct { float x, y, z; int on; } IpN;
+static IpP ipPrevP, ipSaveP; static IpB ipPrevB[MAXBOT], ipSaveB[MAXBOT]; static IpN ipPrevN[4], ipSaveN[4];
+static int ipPhase, ipFallback, ipPrevCount; static float ipAcc, ipAvg = 1.0f / 60.0f; static unsigned ipPendP, ipPendD;
+static float ipAng(float a, float b, float t) { return a + atan2f(sinf(b - a), cosf(b - a)) * t; }
+static void ipGetP(IpP *o) { o->x = P.x; o->y = P.y; o->z = P.z; o->yaw = P.yaw; o->pitch = P.pitch; o->bob = P.bob; o->cr = P.cr; o->lox = bfLeanOffX; o->loz = bfLeanOffZ; o->ldrop = bfLeanDrop; o->lfrac = bfLeanFrac; }
+static void ipSetP(const IpP *o) { P.x = o->x; P.y = o->y; P.z = o->z; P.yaw = o->yaw; P.pitch = o->pitch; P.bob = o->bob; P.cr = o->cr; bfLeanOffX = o->lox; bfLeanOffZ = o->loz; bfLeanDrop = o->ldrop; bfLeanFrac = o->lfrac; }
+static void ipCapture(void) {      /* guarda el estado ACTUAL (antes de que la logica de este paso lo cambie): sera el "anterior" */
+    ipGetP(&ipPrevP); ipPrevCount = nbots < MAXBOT ? nbots : MAXBOT;
+    for (int i = 0; i < ipPrevCount; i++) { const Bot *b = &bots[i]; ipPrevB[i].x = b->x; ipPrevB[i].z = b->z; ipPrevB[i].py = b->py; ipPrevB[i].yaw = b->yaw; ipPrevB[i].walk = b->walk; ipPrevB[i].mv = b->mv; }
+    for (int i = 0; i < 4; i++) { ipPrevN[i].x = nades[i].x; ipPrevN[i].y = nades[i].y; ipPrevN[i].z = nades[i].z; ipPrevN[i].on = nades[i].on; }
+}
+static void ipApply(float a) {      /* sustituye el estado por la mezcla anterior->actual (guarda el actual en ipSave*) */
+    ipGetP(&ipSaveP); { IpP c = ipSaveP, q = ipPrevP; float dx = c.x - q.x, dz = c.z - q.z, dy = c.y - q.y;
+        if (dx * dx + dz * dz + dy * dy < 9.0f) {      /* mas de 3 m en un paso = reaparicion: no se mezcla */
+            c.x = lerpf(q.x, c.x, a); c.y = lerpf(q.y, c.y, a); c.z = lerpf(q.z, c.z, a); c.yaw = ipAng(q.yaw, c.yaw, a); c.pitch = lerpf(q.pitch, c.pitch, a); c.bob = lerpf(q.bob, c.bob, a); c.cr = lerpf(q.cr, c.cr, a);
+            c.lox = lerpf(q.lox, c.lox, a); c.loz = lerpf(q.loz, c.loz, a); c.ldrop = lerpf(q.ldrop, c.ldrop, a); c.lfrac = lerpf(q.lfrac, c.lfrac, a); ipSetP(&c); } }
+    int n = nbots < MAXBOT ? nbots : MAXBOT;
+    for (int i = 0; i < n; i++) {
+        Bot *b = &bots[i]; IpB *s = &ipSaveB[i]; s->x = b->x; s->z = b->z; s->py = b->py; s->yaw = b->yaw; s->walk = b->walk; s->mv = b->mv;
+        if (i >= ipPrevCount || !b->alive) continue;
+        const IpB *q = &ipPrevB[i]; float dx = b->x - q->x, dz = b->z - q->z, dy = b->py - q->py;
+        if (dx * dx + dz * dz + dy * dy >= 9.0f) continue;
+        b->x = lerpf(q->x, b->x, a); b->z = lerpf(q->z, b->z, a); b->py = lerpf(q->py, b->py, a); b->yaw = ipAng(q->yaw, b->yaw, a); b->walk = lerpf(q->walk, b->walk, a); b->mv = lerpf(q->mv, b->mv, a);
+    }
+    for (int i = 0; i < 4; i++) {
+        Nade *g = &nades[i]; IpN *s = &ipSaveN[i]; s->x = g->x; s->y = g->y; s->z = g->z;
+        if (!g->on || !ipPrevN[i].on) continue;
+        g->x = lerpf(ipPrevN[i].x, g->x, a); g->y = lerpf(ipPrevN[i].y, g->y, a); g->z = lerpf(ipPrevN[i].z, g->z, a);
+    }
+}
+static void ipRestore(void) {      /* devuelve los valores REALES de la logica (se llama tras dibujar) */
+    ipSetP(&ipSaveP);
+    int n = nbots < MAXBOT ? nbots : MAXBOT;
+    for (int i = 0; i < n; i++) { Bot *b = &bots[i]; const IpB *s = &ipSaveB[i]; b->x = s->x; b->z = s->z; b->py = s->py; b->yaw = s->yaw; b->walk = s->walk; b->mv = s->mv; }
+    for (int i = 0; i < 4; i++) { nades[i].x = ipSaveN[i].x; nades[i].y = ipSaveN[i].y; nades[i].z = ipSaveN[i].z; }
+}
 void game_frame(const Pad *pd, float dt) {
     float t = SH / 224.0f;
     if (pd->pressed & B_R3) fpsOn = !fpsOn;
     fpsTick();
+    /* --- interpolacion de fotogramas: decide si esta pasada ejecuta la logica (ver el bloque de ipCapture/ipApply) --- */
+    const float fdt = dt; float ldt = dt; int doLogic = 1; const Pad *pd0 = pd; Pad pdc;
+    ipAvg += (fpsRawDt - ipAvg) * 0.08f;
+    int interpOn = S.interp && !netMode && (mode == M_PLAYING || mode == M_ROUNDEND);
+    if (interpOn) { if (ipAvg > 0.028f) ipFallback = 1; else if (ipAvg < 0.022f) ipFallback = 0; if (ipFallback) interpOn = 0; }      /* no llega a ~36 cuadros/s: un paso de logica por cuadro */
+    gfx_vsync_strict(S.interp);      /* con la opcion activa el cambio de buffer espera siempre el vblank: sin cortes de imagen */
+    if (interpOn) {
+        ipPendP |= pd->pressed; ipPendD |= pd->down; ipAcc += fdt;      /* las pulsaciones de la pasada intermedia no se pierden */
+        if (ipPhase == 0) { pdc = *pd; pdc.pressed = ipPendP; pdc.down |= ipPendD; ipPendP = ipPendD = 0; pd = &pdc; ldt = fminf(ipAcc, 0.05f); ipAcc = 0; ipPhase = 1; }
+        else { doLogic = 0; ipPhase = 0; }
+    } else { ipPendP = ipPendD = 0; ipPhase = 0; ipAcc = 0; }
     #ifdef PC_ONLINE
     { int f; if (pc_video_poll(&f)) { vidCur.full = vidNew.full = f; cfgSave(); } }
     mpPump(dt);
@@ -10805,9 +10870,11 @@ void game_frame(const Pad *pd, float dt) {
     if (bannerT > 0) bannerT -= dt;
     for (int i = 0; i < 4; i++) if (feedT[i] > 0) feedT[i] -= dt;
     int inGame = mode == M_PLAYING || mode == M_ROUNDEND || mode == M_PAUSE;
-    if (inGame) charAnim(mode == M_PLAYING ? pd : NULL, dt);
+    if (inGame) charAnim(mode == M_PLAYING ? pd0 : NULL, dt);      /* animacion del jugador: cada pasada, con el tiempo del cuadro */
     if (mode == M_PLAYING || mode == M_ROUNDEND) {
         int canAct = mode == M_PLAYING && freeze <= 0;
+        if (doLogic) {      /* LOGICA: con interpolacion solo en una de cada dos pasadas, con dt = tiempo real de esas dos */
+        dt = ldt; if (interpOn) ipCapture();
         if (mode == M_PLAYING && freeze > 0) freeze -= dt;
         const Pad *gp = pd;
 #ifdef PC_ONLINE
@@ -10836,7 +10903,7 @@ void game_frame(const Pad *pd, float dt) {
         }
         updateBots(dt, canAct);
 #ifdef PS2_ONLINE
-        bfUpdateNades(dt); bfUpdateFx(dt); goreUpdate(dt);
+        bfUpdateNades(dt); if (!interpOn) { bfUpdateFx(dt); goreUpdate(dt); }
         for (int i = 0; i < 4; i++) if (bfDT[i] > 0) bfDT[i] -= dt;
         for (int i = 0; i < nbots; i++) {      /* radar tactico: solo se ven los enemigos que tienes a la vista o que acaban de disparar */
             if (bfSpot[i] > 0) bfSpot[i] -= dt;
@@ -10849,7 +10916,7 @@ void game_frame(const Pad *pd, float dt) {
 #ifdef PC_ONLINE
         mpUpdateRemote(dt);
 #endif
-        updateRigs(dt);
+        if (!interpOn) updateRigs(dt);
         if (mode == M_ROUNDEND) {
             afterT -= dt;
             if (afterT <= 0) {
@@ -10875,6 +10942,10 @@ void game_frame(const Pad *pd, float dt) {
         } else
 #endif
         if (mode == M_PLAYING && (pd->pressed & B_START)) { mode = M_PAUSE; sel = 0; prevMode = M_PLAYING; }
+        dt = fdt; }      /* fin de la logica */
+#ifdef PS2_ONLINE
+        if (interpOn) { bfUpdateFx(dt); goreUpdate(dt); }      /* efectos visuales: en cada pasada */
+#endif
     } else if (mode == M_PAUSE && sandbox) {
         menuNav(pd, 5);
         if ((pd->pressed & B_START) || (pd->pressed & B_CIRCLE)) mode = prevMode;
@@ -10946,10 +11017,10 @@ void game_frame(const Pad *pd, float dt) {
         if (pd->pressed & B_CROSS) { if (sel == 0) labStart(); else if (sel == 3) { mode = M_MENU; sel = 0; } else labSet(sel, 1); }
         if (pd->pressed & B_CIRCLE) { mode = M_MENU; sel = 0; }
     } else if (mode == M_SETTINGS) {
-        orbit += dt * 0.08f; menuNav(pd, 13);
+        orbit += dt * 0.08f; menuNav(pd, 14);
         if (pd->pressed & B_LEFT) changeSetting(sel, -1);
-        if (pd->pressed & (B_RIGHT | (sel < 12 ? B_CROSS : 0))) changeSetting(sel, 1);
-        if (((pd->pressed & B_CROSS) && sel == 12) || (pd->pressed & B_CIRCLE)) {
+        if (pd->pressed & (B_RIGHT | (sel < 13 ? B_CROSS : 0))) changeSetting(sel, 1);
+        if (((pd->pressed & B_CROSS) && sel == 13) || (pd->pressed & B_CIRCLE)) {
             mode = settingsFrom;
 #ifdef PC_ONLINE
             sel = settingsFrom == M_PAUSE ? 1 : 2; cfgSave();
@@ -11030,6 +11101,11 @@ void game_frame(const Pad *pd, float dt) {
     }
     t = SH / 224.0f;
     /* --- dibujo --- */
+    int ipSubst = 0;
+    if (interpOn && (mode == M_PLAYING || mode == M_ROUNDEND)) {
+        if (doLogic && freeze <= 0) { ipApply(0.5f); ipSubst = 1; }      /* pasada de logica: se dibuja el punto medio entre el paso anterior y el nuevo */
+        updateRigs(dt);      /* esqueletos de los soldados: cada pasada, con las posiciones que se van a dibujar */
+    }
     gfx_begin(SKY);
     if (inGame) {
         float bob = P.ground ? sinf(P.bob * 2) * 0.035f * clampf(sqrtf(P.vx * P.vx + P.vz * P.vz) / 5, 0, 1) : 0;
@@ -11112,9 +11188,9 @@ void game_frame(const Pad *pd, float dt) {
         drawTextC(SW * 0.5f, SH * 0.92f - 6 * t, t * 0.7f, "IZQ/DER CAMBIAR   X ACEPTAR   O VOLVER", RGBA(143, 160, 166, 255));
     } else if (mode == M_SETTINGS) {
         drawMenuBg(); drawTextC(SW * 0.5f, SH * 0.08f, t * 3.0f, "CONFIGURACION", RGBA(232, 236, 233, 255));
-        const char *it[] = { "DIFICULTAD", "BOTS ENEMIGOS", "BOTS ALIADOS", "RONDAS PARA GANAR", "SENSIBILIDAD", "CAMPO DE VISION", "INVERTIR EJE Y", "COLOR DE MIRA", "VOLUMEN", "SKIN ENEMIGOS", "CAMARA", "MAPA", "VOLVER" };
-        const char *vals[13]; settingsLabels(vals);
-        drawList(it, vals, 13, SH * 0.13f);
+        const char *it[] = { "DIFICULTAD", "BOTS ENEMIGOS", "BOTS ALIADOS", "RONDAS PARA GANAR", "SENSIBILIDAD", "CAMPO DE VISION", "INVERTIR EJE Y", "COLOR DE MIRA", "VOLUMEN", "SKIN ENEMIGOS", "CAMARA", "MAPA", "INTERPOLACION 60", "VOLVER" };
+        const char *vals[14]; settingsLabels(vals);
+        listRs = 0.86f; drawList(it, vals, 14, SH * 0.12f); listRs = 1.0f;
         { char tb[64]; snprintf(tb, 64, "TU EQUIPO: %d   ENEMIGOS: %d   IZQ/DER CAMBIAR   O VOLVER", (int)clampf((float)S.allies, 0, 3) + 1, (int)clampf((float)S.bots, 1, 4)); drawTextC(SW * 0.5f, SH - 8 * t, t * 0.7f, tb, RGBA(143, 160, 166, 255)); }
     } else if (mode == M_PAUSE && sandbox) {
         drawMenuBg(); drawTextC(SW * 0.5f, SH * 0.16f, t * 4.0f, "PAUSA", RGBA(232, 236, 233, 255)); drawTextC(SW * 0.5f, SH * 0.16f + 34 * t, t * 0.9f, "CAMPO DE PRUEBAS", RGBA(224, 128, 58, 255));
@@ -11212,6 +11288,7 @@ void game_frame(const Pad *pd, float dt) {
     if (mpNoticeT > 0 && mode != M_PLAYING) drawTextC(SW * 0.5f, SH * 0.86f, t * 0.9f, mpNotice, RGBA(224, 128, 58, 255));
 #endif
     fpsDraw();
+    if (ipSubst) ipRestore();      /* la logica vuelve a ver sus valores reales */
     gfx_end();
 }
 
@@ -11306,10 +11383,12 @@ void gfx_begin(u32c clear) {
 #ifndef GFX_ADAPTIVE_VSYNC
 #define GFX_ADAPTIVE_VSYNC 0
 #endif
+static int gfxStrict = 0;
+void gfx_vsync_strict(int on) { gfxStrict = on; }
 void gfx_end(void) {
     gsKit_queue_exec(gs);      /* lanza el DMA del cuadro (asincrono) y pasa al otro bufer de comandos */
 #if GFX_ADAPTIVE_VSYNC
-    {
+    if (!gfxStrict) {      /* con la interpolacion activa siempre vsync estricto (sin cortes) */
         volatile u64 *csr = (volatile u64 *)0x12001000;         /* GS_CSR: bit 3 (8) = vblank */
         volatile u64 *dispfb2 = (volatile u64 *)0x12000090;     /* GS_DISPFB2 */
         while (!(*csr & 8)) {}      /* si el vblank ya paso, no espera */
@@ -11319,7 +11398,7 @@ void gfx_end(void) {
             gs->ActiveBuffer ^= 1;
         }
         gsKit_setactive(gs);
-    }
+    } else gsKit_sync_flip(gs);
 #else
     gsKit_sync_flip(gs);
 #endif
