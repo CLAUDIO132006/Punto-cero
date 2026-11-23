@@ -3,6 +3,7 @@
  * Los datos generados (assets_data.c, models_data.c, *_irx.c) siguen aparte: los crea el Makefile.
  */
 
+#pragma GCC diagnostic ignored "-Wunused-function"      /* vbox, freeSpot, navSnap... se usan segun la plataforma: sin ruido en el registro de compilacion */
 /* ################ sound.c ################ */
 /* Sintesis de efectos "tacticos" (estampido grave + chasquido agudo + eco de sala)
  * y mezclador estereo con distancia y paneo. Todo se genera en tiempo de ejecucion. */
@@ -11298,42 +11299,57 @@ void gfx_begin(u32c clear) {
     gsKit_clear(gs, col(clear, 1));
 }
 
-/* Doble buffer sin salto a 30 fps: gsKit_sync_flip espera SIEMPRE un nuevo vblank, asi que un cuadro que tarda 17 ms espera hasta los 33 ms.
- * Aqui solo se espera si todavia no hubo vblank desde el ultimo cambio de buffer (la marca de la GS queda puesta); si el cuadro ya se paso,
- * se cambia de inmediato (en un cuadro tardio puede verse un corte). Con GFX_ADAPTIVE_VSYNC 0 vuelve el comportamiento de antes (vsync estricto). */
+/* Doble buffer sin salto a 30 fps (OPCIONAL, desactivado por defecto): gsKit_sync_flip espera SIEMPRE un nuevo vblank, asi que un cuadro que tarda 17 ms
+ * espera hasta los 33 ms. Con GFX_ADAPTIVE_VSYNC 1 solo se espera si todavia no hubo vblank desde el ultimo cambio de buffer.
+ * OJO: usa gsKit_setactive, que segun la version de gsKit puede no estar declarada: por eso viene en 0 y el juego usa el gsKit_sync_flip de siempre.
+ * Para probarlo: compilar con -DGFX_ADAPTIVE_VSYNC=1 (los registros de la GS se escriben con sus direcciones fijas, sin macros del SDK). */
 #ifndef GFX_ADAPTIVE_VSYNC
-#define GFX_ADAPTIVE_VSYNC 1
+#define GFX_ADAPTIVE_VSYNC 0
 #endif
 void gfx_end(void) {
     gsKit_queue_exec(gs);      /* lanza el DMA del cuadro (asincrono) y pasa al otro bufer de comandos */
 #if GFX_ADAPTIVE_VSYNC
-    while (!(*GS_CSR & 8)) {}      /* si el vblank ya paso, no espera */
-    *GS_CSR = *GS_CSR & 8;         /* rearma la marca de vblank para el proximo cuadro */
-    if (gs->DoubleBuffering == GS_SETTING_ON) {
-        GS_SET_DISPFB2(gs->ScreenBuffer[gs->ActiveBuffer & 1] / 8192, gs->Width / 64, gs->PSM, 0, 0);
-        gs->ActiveBuffer ^= 1;
+    {
+        volatile u64 *csr = (volatile u64 *)0x12001000;         /* GS_CSR: bit 3 (8) = vblank */
+        volatile u64 *dispfb2 = (volatile u64 *)0x12000090;     /* GS_DISPFB2 */
+        while (!(*csr & 8)) {}      /* si el vblank ya paso, no espera */
+        *csr = *csr & 8;            /* rearma la marca de vblank para el proximo cuadro */
+        if (gs->DoubleBuffering == GS_SETTING_ON) {
+            *dispfb2 = (u64)(gs->ScreenBuffer[gs->ActiveBuffer & 1] / 8192) | ((u64)(gs->Width / 64) << 9) | ((u64)gs->PSM << 15);
+            gs->ActiveBuffer ^= 1;
+        }
+        gsKit_setactive(gs);
     }
-    gsKit_setactive(gs);
 #else
     gsKit_sync_flip(gs);
 #endif
 }
 
-/* Abanico de triangulos Gouraud en UN paquete GIF (formato REGLIST: PRIM en la etiqueta, y por vertice RGBAQ+XYZ2 = 1 qword).
- * Un cuadrado cuesta 5 qwords (etiqueta + 4 vertices) en lugar de 8 con dos triangulos, y la GS recibe 4 vertices en vez de 6. */
+/* Abanico de triangulos Gouraud. Por defecto se parte en triangulos con gfx_tri (solo usa la API publica de gsKit).
+ * GFX_FAN_GIF 1 = un unico paquete GIF por abanico (mas rapido, pero usa internos de gsKit que cambian segun la version del SDK: NO activar sin comprobarlo). */
+#ifndef GFX_FAN_GIF
+#define GFX_FAN_GIF 0
+#endif
+#if GFX_FAN_GIF
 void gfx_fan(int n, const float *x, const float *y, const int *z, const u32c *c) {
     if (n < 3) return;
     if (n > 30) n = 30;
     int tr = 0; for (int i = 0; i < n; i++) if (CA(c[i]) < 255) tr = 1;      /* con alfa (humo, fuego, trazadoras): mezcla con lo ya dibujado */
-    u64 *p = (u64 *)gsKit_heap_alloc(gs, n, n * 16, GIF_AD);      /* GIF_AD = etiqueta propia: gsKit no la fusiona con otra */
+    u64 *p = (u64 *)gsKit_heap_alloc(gs, n, n * 16, GIF_AD);
     u64 prim = GS_SETREG_PRIM(GS_PRIM_PRIM_TRIFAN, 1, 0, gs->PrimFogEnable, tr, gs->PrimAAEnable, 0, gs->PrimContext, 0);
-    *p++ = (u64)n | ((u64)1 << 15) | ((u64)1 << 46) | (prim << 47) | ((u64)GSKIT_GIF_FLG_REGLIST << 58) | ((u64)2 << 60);      /* NLOOP=n, EOP, PRE, PRIM, REGLIST, 2 registros */
+    *p++ = (u64)n | ((u64)1 << 15) | ((u64)1 << 46) | (prim << 47) | ((u64)1 << 58) | ((u64)2 << 60);      /* NLOOP=n, EOP, PRE, PRIM, FLG=REGLIST(1), NREG=2 */
     *p++ = 0x51;      /* RGBAQ (1), XYZ2 (5) */
     for (int i = 0; i < n; i++) {
         *p++ = col(c[i], !tr);
         *p++ = GS_SETREG_XYZ2(gsKit_float_to_int_x(gs, x[i]), gsKit_float_to_int_y(gs, y[i]), z[i]);
     }
 }
+#else
+void gfx_fan(int n, const float *x, const float *y, const int *z, const u32c *c) {
+    if (n > 30) n = 30;
+    for (int i = 1; i + 1 < n; i++) gfx_tri(x[0], y[0], z[0], c[0], x[i], y[i], z[i], c[i], x[i + 1], y[i + 1], z[i + 1], c[i + 1]);
+}
+#endif
 
 void gfx_tri(float x1, float y1, int z1, u32c c1, float x2, float y2, int z2, u32c c2, float x3, float y3, int z3, u32c c3) {
     int tr = CA(c1) < 255 || CA(c2) < 255 || CA(c3) < 255;      /* triangulos con alfa (humo, fuego, trazadoras): mezcla con lo ya dibujado */
