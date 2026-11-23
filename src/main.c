@@ -6390,6 +6390,9 @@ void gfx_tri(float x1, float y1, int z1, u32c c1,
              float x3, float y3, int z3, u32c c3);
 /* Rectangulo 2D siempre al frente; el alfa del color se respeta */
 void gfx_rect(float x1, float y1, float x2, float y2, u32c c);
+/* Poligono convexo como abanico de triangulos (v0 es el centro): n vertices = n quads para el GIF en vez de 3*(n-2). Misma triangulacion que
+ * dibujar (v0,vi,vi+1) con gfx_tri, asi que el resultado en pantalla es identico. n <= 30. */
+void gfx_fan(int n, const float *x, const float *y, const int *z, const u32c *c);
 void pad_init(void);
 void pad_poll(Pad *p);
 void audio_init(void);   /* PS2: carga audsrv; PC: nada */
@@ -7251,8 +7254,8 @@ static void emitPoly(V *in, int n, int overlay) {
         sz[i] = (int)clampf(a[i].z, 0, 16777000.0f);
         sc[i] = RGBA((int)clampf(a[i].r, 0, 255), (int)clampf(a[i].g, 0, 255), (int)clampf(a[i].b, 0, 255), 255);
     }
-    for (int i = 1; i + 1 < na; i++)
-        gfx_tri(a[0].x, a[0].y, sz[0], sc[0], a[i].x, a[i].y, sz[i], sc[i], a[i + 1].x, a[i + 1].y, sz[i + 1], sc[i + 1]);
+    float fxs[24], fys[24]; for (int i = 0; i < na; i++) { fxs[i] = a[i].x; fys[i] = a[i].y; }
+    gfx_fan(na, fxs, fys, sz, sc);      /* un solo paquete GIF por poligono (antes: un triangulo por paquete) */
 }
 
 static void fogColor(u32c base, float shade, float dist, float *r, float *g, float *b) {
@@ -7508,6 +7511,23 @@ static void allySpawnPos(Bot *b, int k) {      /* los aliados aparecen a tu lado
 }
 #define SPAWN_NEAR 17.0f       /* distancia minima (m) entre un soldado que aparece y el jugador, si estan en el mismo piso */
 #define SPAWN_NEAR_UP 11.0f    /* ... si estan en pisos distintos */
+/* ---------- Armas de los soldados: las mismas cuatro que el jugador ----------
+ * dmgMul/fireMul/spreadMul: dano por impacto (o por perdigon), intervalo entre disparos y dispersion respecto al soldado de fusil (que es la base de la dificultad).
+ * pellets: perdigones por disparo; range: no disparan mas lejos; advD/backD: se acercan si estan mas lejos y retroceden si estan mas cerca (m); burstMul: tamano de la rafaga.
+ * Estan equilibradas para que cada arma rinda parecido en su distancia buena: la escopeta es letal de cerca y tonta de lejos, el fusil es el punto medio,
+ * la ametralladora llena de plomo y la pistola es precisa pero lenta. */
+typedef struct { float dmgMul, fireMul, spreadMul, range, advD, backD, burstMul; int pellets; } BotWeapon;
+static const BotWeapon BWP[4] = {
+    /* 0 pistola         */ { 1.25f, 1.7f, 0.75f, 45.0f, 14.0f, 5.0f, 0.6f, 1 },
+    /* 1 fusil           */ { 1.00f, 1.0f, 1.00f, 60.0f, 16.0f, 6.0f, 1.0f, 1 },
+    /* 2 escopeta        */ { 0.45f, 2.2f, 1.60f, 18.0f,  8.0f, 3.0f, 0.4f, 6 },
+    /* 3 ametralladora   */ { 0.80f, 0.7f, 1.50f, 55.0f, 20.0f, 8.0f, 2.0f, 1 } };
+static int botBurstN(const Bot *b, int base) { int n = (int)(base * BWP[b->wep & 3].burstMul + 0.5f); return n < 1 ? 1 : n; }
+static int botPickWep(int i) {      /* baraja de 8 (3 fusiles, 2 escopetas, 2 ametralladoras, 1 pistola) con salida al azar: siempre hay variedad */
+    static const unsigned char deck[8] = { 1, 2, 3, 0, 1, 3, 2, 1 }; static int off = 0;
+    if (i == 0) off = rand() % 8;
+    return deck[(off + i) & 7];
+}
 static void spawnBots(void) {      /* el jugador ya esta colocado: los soldados salen de los puntos del mapa, lejos de el y de preferencia sin verlo */
     int na = (int)clampf((float)S.allies, 0, 3), ne = (int)clampf((float)S.bots, 1, 4);      /* aliados (con tigo hasta 4) contra enemigos (hasta 4) */
     if (na + ne > MAXBOT) ne = MAXBOT - na;
@@ -7532,7 +7552,7 @@ static void spawnBots(void) {      /* el jugador ya esta colocado: los soldados 
 #ifdef PS2_ONLINE
         b->armor = PLATE_HP * PLATE_N; b->plates = PLATE_STOCK;
 #endif
-        b->strafe = (rand() & 1) ? 1 : -1; b->strafeT = 1; b->fireCD = 0.5f;
+        b->strafe = (rand() & 1) ? 1 : -1; b->strafeT = 1; b->fireCD = 0.5f; b->wep = botPickWep(i);
         botWander(b); b->pn = 0;
     }
 }
@@ -7827,10 +7847,17 @@ static int bfProj(float wx, float wy, float wz, float *sx, float *sy, int *zd, f
     float iz = 1.0f / z; *sx = SW * 0.5f + x * iz * camF; *sy = SH * 0.5f - y * iz * camF;
     *zd = (int)clampf(16777000.0f * 0.1f * iz * 1.03f, 0, 16777000.0f); *pxs = camF * iz; return 1;
 }
+/* Disco: centro (cx,cy,cz,cc) y anillo de n vertices (X,Y,Z o zconst si Z es NULL, color ce): n+2 vertices en un abanico en vez de 3n */
+static void fanDisc(float cx, float cy, int cz, u32c cc, int n, const float *X, const float *Y, const int *Z, int zc, u32c ce) {
+    float fx[20], fy[20]; int fz[20]; u32c fc[20]; if (n > 16) n = 16; if (n < 3) return;
+    fx[0] = cx; fy[0] = cy; fz[0] = cz; fc[0] = cc;
+    for (int i = 0; i <= n; i++) { int k = i % n; fx[i + 1] = X[k]; fy[i + 1] = Y[k]; fz[i + 1] = Z ? Z[k] : zc; fc[i + 1] = ce; }
+    gfx_fan(n + 2, fx, fy, fz, fc);
+}
 static void bfFan(float cx, float cy, int zd, float rad, int n, u32c cc, u32c ce, float sy) {   /* disco suave: centro opaco, borde transparente */
     float px[16], py[16]; if (n > 16) n = 16;
     for (int i = 0; i < n; i++) { float a = i * 6.2832f / n + 0.4f; px[i] = cx + cosf(a) * rad; py[i] = cy + sinf(a) * rad * sy; }
-    for (int i = 0; i < n; i++) { int j = (i + 1) % n; gfx_tri(cx, cy, zd, cc, px[i], py[i], zd, ce, px[j], py[j], zd, ce); }
+    fanDisc(cx, cy, zd, cc, n, px, py, NULL, zd, ce);
 }
 /* ---------- Ragdoll y sangre (solo PS2) ----------
  * Al morir, cada bot pasa a una simulacion Verlet de 17 particulas (columna, cadera, hombros, cabeza, piernas con pies, mano y arma)
@@ -8191,7 +8218,7 @@ static void goreFan(const float *c, const float *ta, const float *tb, float r, i
         ok = bfProj(c[0] + ta[0] * cs + tb[0] * sn, c[1] + ta[1] * cs + tb[1] * sn, c[2] + ta[2] * cs + tb[2] * sn, &X[i], &Y[i], &Z[i], &ps);
     }
     float cx, cy; int cz; if (!ok || !bfProj(c[0], c[1], c[2], &cx, &cy, &cz, &ps)) return;
-    for (int i = 0; i < n; i++) { int j = (i + 1) % n; gfx_tri(cx, cy, cz, cc, X[i], Y[i], Z[i], ce, X[j], Y[j], Z[j], ce); }
+    fanDisc(cx, cy, cz, cc, n, X, Y, Z, 0, ce);
 }
 static void goreDraw(void) {
     static const float N6[5][3] = { { 0, 1, 0 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
@@ -8417,7 +8444,19 @@ static void smkCell(float x0, float y0, float x1, float y1, int depth) {
     smk.quads++;
 }
 static void bfDrawSmoke(void) {
+    /* Orden de dibujo: de la nube mas LEJANA a la mas CERCANA. Cada nube se pinta a una profundidad fija y la GS escribe Z tambien al mezclar con alfa:
+     * si la nube de atras se pintaba despues, perdia la prueba de profundidad contra la de adelante y quedaba recortada (con un corte diagonal). */
+    int ord[SMOKE_N], zk[SMOKE_N], no = 0;
     for (int k = 0; k < SMOKE_N; k++) {
+        const Smoke *s = &smokes[k]; if (!s->on) continue;
+        float rad = smokeRad(s) * 0.9f, c[3] = { s->x, s->y + 1.6f, s->z }, ex = camX - c[0], ey = camY - c[1], ez = camZ - c[2], dist = sqrtf(ex * ex + ey * ey + ez * ez);
+        float q = dist > 1e-3f ? 0.35f * rad / dist : 0; if (q > 0.9f) q = 0.9f;
+        float tx, ty, tps; int tz = 0; if (!bfProj(c[0] + ex * q, c[1] + ey * q, c[2] + ez * q, &tx, &ty, &tz, &tps)) tz = 0;      /* la misma profundidad que usa la nube al dibujarse */
+        int i = no++; while (i > 0 && zk[i - 1] > tz) { zk[i] = zk[i - 1]; ord[i] = ord[i - 1]; i--; }
+        zk[i] = tz; ord[i] = k;
+    }
+    for (int oi = 0; oi < no; oi++) {
+        int k = ord[oi];
         const Smoke *s = &smokes[k]; if (!s->on) continue;
         float den = smokeDen(s), rad = smokeRad(s) * 0.9f; if (den < 0.02f) continue;
         float c[3] = { s->x, s->y + 1.6f, s->z }, ex = camX - c[0], ey = camY - c[1], ez = camZ - c[2], dist = sqrtf(ex * ex + ey * ey + ez * ez);
@@ -8532,31 +8571,39 @@ static void labSet(int i, int dir) {
 }
 
 static void botShoot(Bot *b, float dist, int tg) {      /* tg: a quien dispara (-1 = al jugador, >=0 = a ese soldado) */
-    snd_play3d(SND_BOTSHOT, b->x, b->z, 1.0f); b->shotT = 1.5f;
+    const int wk = b->wep & 3; const BotWeapon *bw = &BWP[wk];
+    snd_play3d(wk == 0 ? SND_PISTOL : (wk == 2 ? SND_SHOTGUN : (wk == 3 ? SND_RIFLE : SND_BOTSHOT)), b->x, b->z, wk == 2 ? 1.2f : 1.0f); b->shotT = 1.5f;
 #ifdef PS2_ONLINE
     bfSpot[b - bots] = b->team ? 0.0f : 2.5f;      /* el enemigo que dispara aparece en el radar (tus aliados ya se ven siempre) */
 #endif
     float o[3] = { b->x - sinf(b->yaw) * 0.6f, b->py + 1.35f, b->z - cosf(b->yaw) * 0.6f };
-    float k = DIFF_AIM[S.diff];
+    float k = DIFF_AIM[S.diff] * bw->spreadMul;
     Bot *tb = (tg >= 0 && tg < nbots && bots[tg].alive) ? &bots[tg] : NULL;
     float cx = tb ? tb->x : P.x + bfLeanOffX, cz = tb ? tb->z : P.z + bfLeanOffZ, cy = tb ? tb->py : P.y, cr = tb ? tb->rg.crouch : P.cr;
-    float t[3] = { cx + rndf(-1, 1) * k * (1 + dist * .35f), cy + 1.15f - 0.42f * cr + rndf(-1, 1) * k * (1 + dist * .3f), cz + rndf(-1, 1) * k * (1 + dist * .35f) };
-    float d[3] = { t[0] - o[0], t[1] - o[1], t[2] - o[2] };
-    float L = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]); d[0] /= L; d[1] /= L; d[2] /= L;
-    float wd = wallDist(o, d, 80);
-#ifdef PS2_ONLINE
-    { float e = wd; bfTracer(o[0], o[1], o[2], o[0] + d[0] * e, o[1] + d[1] * e, o[2] + d[2] * e);
-      bfPt(3, o[0], o[1], o[2], 0, 0, 0, 0.05f, 0.09f, 0.15f, 255, 225, 150, 220, 0, 0);
-      if (wd < 79) bfImpact(o, d, wd); }
-#endif
     float mn[3] = { cx - .3f, cy, cz - .3f }, mx[3] = { cx + .3f, cy + 1.75f - 0.6f * cr, cz + .3f };
-    if (rayBox(o, d, mn, mx) < wd) {
-        if (tb) { gByBot = 1; gAtkX = b->x; gAtkZ = b->z; damageBot(tb, DIFF_DMG[S.diff] * rndf(0.8f, 1.2f), 0); gByBot = 0; }      /* soldado contra soldado */
+    float dmg = 0;
+    for (int pel = 0; pel < bw->pellets; pel++) {      /* la escopeta lanza varios perdigones; el resto de armas, uno */
+        float t[3] = { cx + rndf(-1, 1) * k * (1 + dist * .35f), cy + 1.15f - 0.42f * cr + rndf(-1, 1) * k * (1 + dist * .3f), cz + rndf(-1, 1) * k * (1 + dist * .35f) };
+        float d[3] = { t[0] - o[0], t[1] - o[1], t[2] - o[2] };
+        float L = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]); d[0] /= L; d[1] /= L; d[2] /= L;
+        float wd = wallDist(o, d, 80);
+#ifdef PS2_ONLINE
+        if (pel == 0) {      /* trazador, fogonazo e impacto solo del primer perdigon (los demas no suman efectos: cuestan cuadros) */
+            float e = wd; bfTracer(o[0], o[1], o[2], o[0] + d[0] * e, o[1] + d[1] * e, o[2] + d[2] * e);
+            bfPt(3, o[0], o[1], o[2], 0, 0, 0, 0.05f, 0.09f, 0.15f, 255, 225, 150, 220, 0, 0);
+            if (wd < 79) bfImpact(o, d, wd);
+        }
+#endif
+        if (rayBox(o, d, mn, mx) < wd) dmg += DIFF_DMG[S.diff] * bw->dmgMul * rndf(0.8f, 1.2f);
+    }
+    if (dmg > 0) {
+        if (bw->pellets > 1) dmg *= clampf(1.0f - (dist - 6.0f) / 14.0f, 0.15f, 1.0f);      /* los perdigones pierden fuerza con la distancia */
+        if (tb) { gByBot = 1; gAtkX = b->x; gAtkZ = b->z; damageBot(tb, dmg, 0); gByBot = 0; }      /* soldado contra soldado */
         else {
 #ifdef PS2_ONLINE
             bfHurtFrom(b->x, b->z);
 #endif
-            hurtPlayer(DIFF_DMG[S.diff] * rndf(0.8f, 1.2f));
+            hurtPlayer(dmg);
         }
     }
 }
@@ -8937,7 +8984,7 @@ static void updateBots(float dt, int active) {
                 else { navSteer(b, b->lkx, b->lkz, b->lkl, adt, &mx, &mz); speed = DIFF_SPEED[di] * 0.8f; face = atan2f(-mx, -mz); }
             } else if (b->state == BS_ALERT) {
                 face = toYaw; b->react -= adt;
-                if (b->react <= 0 && sees) { b->state = BS_ENGAGE; b->fireCD = rndf(0.1f, 0.3f); b->burst = 3 + rand() % 3; }
+                if (b->react <= 0 && sees) { b->state = BS_ENGAGE; b->fireCD = rndf(0.1f, 0.3f); b->burst = botBurstN(b, 3 + rand() % 3); }
             } else if (b->state == BS_COVER) {          /* corre hacia la cobertura */
                 float wx = b->coverX - b->x, wz = b->coverZ - b->z, L = sqrtf(wx * wx + wz * wz);
                 b->timer += adt; b->crWant = 0;
@@ -8957,10 +9004,10 @@ static void updateBots(float dt, int active) {
                 } else
     #endif
                 b->timer -= adt;
-                if (!b->plating && (b->timer <= 0 || (b->hitT > 0 && b->timer < 1.0f))) { b->state = BS_PEEK; b->peekT = rndf(1.6f, 3.0f); b->burst = 2 + rand() % 3; b->cov = rand() % 2; b->fireCD = 0.2f; }
+                if (!b->plating && (b->timer <= 0 || (b->hitT > 0 && b->timer < 1.0f))) { b->state = BS_PEEK; b->peekT = rndf(1.6f, 3.0f); b->burst = botBurstN(b, 2 + rand() % 3); b->cov = rand() % 2; b->fireCD = 0.2f; }
             } else if (b->state == BS_PEEK) {           /* asoma: apunta y dispara agachado o de pie */
                 face = toYaw; b->crWant = b->cov; b->peekT -= adt; b->fireCD -= adt;
-                if (sees && b->fireCD <= 0 && fabsf(dyaw) < 0.5f) { b->fireCD = DIFF_FIRE[di] * rndf(0.9f, 1.3f); botShoot(b, dist, tg); b->fireEv = 1; if (--b->burst <= 0) b->peekT = 0; }
+                if (sees && b->fireCD <= 0 && fabsf(dyaw) < 0.5f && dist < BWP[b->wep & 3].range) { b->fireCD = DIFF_FIRE[di] * BWP[b->wep & 3].fireMul * rndf(0.9f, 1.3f); botShoot(b, dist, tg); b->fireEv = 1; if (--b->burst <= 0) b->peekT = 0; }
                 if (b->peekT <= 0) { if (b->hp < DIFF_HP[di] * 0.5f && rand() % 2) { b->state = BS_HIDE; b->timer = rndf(1.5f, 3.0f); } else { b->state = BS_ENGAGE; b->crWant = 0; } }
             } else {
                 face = toYaw; b->strafeT -= adt;
@@ -8977,12 +9024,12 @@ static void updateBots(float dt, int active) {
                     }
                 }
                 float rx = cosf(b->yaw), rz = -sinf(b->yaw), nx = dx / (dist + 1e-4f), nz = dz / (dist + 1e-4f);
-                float adv = dist > 16 ? 1 : (dist < 6 ? -0.8f : 0);
+                float adv = dist > BWP[b->wep & 3].advD ? 1 : (dist < BWP[b->wep & 3].backD ? -0.8f : 0);      /* distancia que busca cada arma */
                 mx = rx * b->strafe * 0.8f + nx * adv; mz = rz * b->strafe * 0.8f + nz * adv; speed = DIFF_SPEED[di] * (b->crWant ? 0.35f : 0.7f);
                 b->fireCD -= adt; if (b->pause > 0) b->pause -= adt;
-                if (sees && b->fireCD <= 0 && b->pause <= 0 && fabsf(dyaw) < 0.5f) {
-                    b->fireCD = DIFF_FIRE[di] * rndf(0.8f, 1.2f);
-                    if (--b->burst <= 0) { b->pause = rndf(0.5f, 1.2f); b->burst = 3 + rand() % 3; }
+                if (sees && b->fireCD <= 0 && b->pause <= 0 && fabsf(dyaw) < 0.5f && dist < BWP[b->wep & 3].range) {
+                    b->fireCD = DIFF_FIRE[di] * BWP[b->wep & 3].fireMul * rndf(0.8f, 1.2f);
+                    if (--b->burst <= 0) { b->pause = rndf(0.5f, 1.2f); b->burst = botBurstN(b, 3 + rand() % 3); }
                     botShoot(b, dist, tg); b->fireEv = 1;
                 }
             }
@@ -9669,19 +9716,59 @@ static const unsigned char SGL_C[SGL_NT] = {
     5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
     5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
 };
+/* Escopeta M37 para soldados (77 triangulos, versiones mas bastas de las mismas piezas): se usa solo de cerca (BOT_WEAP_NEAR); de lejos el soldado lleva el arma de su modelo. */
+#define SGB_NV 55
+#define SGB_NT 77
+static const float SGB_V[SGB_NV * 3] = {
+    0.0162f, 0.0541f, -0.0760f, -0.0000f, 0.0579f, 0.1172f, 0.0000f, -0.0137f, -0.0630f,
+    0.0188f, -0.0040f, 0.1108f, -0.0193f, -0.0052f, 0.1163f, -0.0206f, 0.0442f, -0.0751f,
+    -0.0000f, -0.0080f, 0.0283f, -0.0095f, 0.0282f, 0.1189f, -0.0052f, 0.0544f, 0.1107f,
+    0.0055f, 0.0249f, 0.1107f, 0.0100f, 0.0522f, 0.1189f, -0.0044f, 0.0510f, 0.6529f,
+    0.0039f, 0.0264f, 0.6491f, -0.0144f, 0.0145f, 0.1107f, -0.0086f, -0.0058f, 0.4532f,
+    0.0036f, -0.0073f, 0.1107f, 0.0141f, -0.0000f, 0.4487f, 0.0138f, 0.0120f, 0.1107f,
+    -0.0033f, 0.0234f, 0.4437f, 0.0174f, 0.0444f, -0.0746f, 0.0188f, 0.0083f, -0.1594f,
+    0.0179f, -0.0149f, -0.4487f, 0.0194f, -0.0545f, -0.2257f, 0.0196f, -0.1309f, -0.4431f,
+    0.0000f, -0.0908f, -0.1695f, 0.0175f, -0.0022f, -0.0649f, -0.0143f, 0.0476f, -0.0752f,
+    -0.0194f, 0.0056f, -0.1600f, -0.0197f, -0.0201f, -0.4467f, -0.0163f, -0.0065f, -0.0639f,
+    -0.0172f, -0.0585f, -0.2242f, -0.0187f, -0.1330f, -0.4379f, 0.0004f, -0.0215f, -0.0551f,
+    0.0015f, -0.0084f, -0.0350f, 0.0020f, -0.0138f, -0.0770f, 0.0042f, -0.0084f, -0.0652f,
+    -0.0042f, -0.0084f, -0.0652f, -0.0008f, -0.0373f, -0.0095f, 0.0051f, -0.0222f, -0.0060f,
+    -0.0002f, -0.0098f, -0.0201f, -0.0025f, -0.0098f, 0.0130f, 0.0220f, 0.0199f, 0.4175f,
+    0.0000f, 0.0322f, 0.4175f, -0.0220f, 0.0199f, 0.4175f, -0.0220f, -0.0047f, 0.4175f,
+    -0.0000f, -0.0170f, 0.4175f, 0.0220f, -0.0047f, 0.4175f, 0.0264f, 0.0222f, 0.2425f,
+    0.0000f, 0.0369f, 0.2425f, -0.0264f, 0.0222f, 0.2425f, -0.0264f, -0.0070f, 0.2425f,
+    -0.0000f, -0.0217f, 0.2425f, 0.0264f, -0.0070f, 0.2425f, 0.0000f, 0.0076f, 0.4175f,
+    0.0000f, 0.0076f, 0.2425f,
+};
+static const unsigned char SGB_T[SGB_NT * 3] = {
+    2, 0, 3, 3, 1, 4, 3, 0, 1, 2, 4, 5, 0, 5, 1, 0, 2, 5, 4, 2, 6, 4, 1, 5,
+    3, 6, 2, 4, 6, 3, 11, 8, 12, 12, 8, 9, 12, 9, 8, 12, 8, 11, 11, 7, 10, 11, 12, 7,
+    12, 11, 10, 12, 10, 7, 14, 13, 15, 14, 15, 16, 16, 15, 17, 16, 17, 18, 18, 17, 13, 13, 14, 18,
+    16, 18, 14, 19, 25, 20, 20, 24, 22, 20, 25, 24, 20, 22, 23, 20, 23, 21, 19, 20, 27, 19, 27, 26,
+    23, 22, 30, 23, 30, 31, 22, 24, 30, 26, 27, 29, 27, 30, 24, 27, 24, 29, 27, 28, 31, 27, 31, 30,
+    27, 20, 21, 27, 21, 28, 24, 25, 29, 28, 23, 31, 23, 28, 21, 34, 35, 33, 34, 33, 32, 32, 33, 36,
+    39, 37, 40, 37, 38, 40, 38, 39, 40, 32, 36, 34, 38, 37, 39, 41, 48, 42, 41, 47, 48, 42, 49, 43,
+    42, 48, 49, 43, 50, 44, 43, 49, 50, 44, 51, 45, 44, 50, 51, 45, 52, 46, 45, 51, 52, 46, 47, 41,
+    46, 52, 47, 53, 41, 42, 53, 42, 43, 53, 43, 44, 53, 44, 45, 53, 45, 46, 53, 46, 41, 54, 48, 47,
+    54, 49, 48, 54, 50, 49, 54, 51, 50, 54, 52, 51, 54, 47, 52,
+};
+static const unsigned char SGB_C[SGB_NT] = {
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+};
 static const u32c SG_PAL[10] = { RGBA(46, 49, 55, 255), RGBA(74, 78, 86, 255), RGBA(92, 96, 104, 255), RGBA(116, 78, 46, 255), RGBA(130, 90, 54, 255),
                                  RGBA(92, 60, 34, 255), RGBA(38, 40, 45, 255), RGBA(118, 122, 130, 255), RGBA(60, 63, 70, 255), RGBA(224, 128, 58, 255) };
 /* soldado con escopeta (tercera persona): igual que vpDrawRig; el punto de agarre de la culata cae sobre la mano del hueso BN_WEAP */
-static void sgDrawRig(const M34 *wm) {
+static void sgDrawMesh(const M34 *wm, const float *MV, const unsigned char *MT, const unsigned char *MC, int nv, int nt) {
     float tv[SGL_NV][3];
-    for (int i = 0; i < SGL_NV; i++) {
-        float lp[3] = { 0.17f - SGL_V[i * 3], 1.12f + (SGL_V[i * 3 + 1] - SG_GY), -0.38f - (SGL_V[i * 3 + 2] - SG_GZ) };
+    for (int i = 0; i < nv; i++) {
+        float lp[3] = { 0.17f - MV[i * 3], 1.12f + (MV[i * 3 + 1] - SG_GY), -0.38f - (MV[i * 3 + 2] - SG_GZ) };
         m34Xf(wm, lp, tv[i]);
     }
     const float *m = wm->m;
     float det = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) + m[2] * (m[4] * m[9] - m[5] * m[8]), sg = det < 0 ? -1.0f : 1.0f;
-    for (int t = 0; t < SGL_NT; t++) {
-        const float *a = tv[SGL_T[t * 3]], *b = tv[SGL_T[t * 3 + 1]], *c = tv[SGL_T[t * 3 + 2]];
+    for (int t = 0; t < nt; t++) {
+        const float *a = tv[MT[t * 3]], *b = tv[MT[t * 3 + 1]], *c = tv[MT[t * 3 + 2]];
         float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
         float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, nl = nx * nx + ny * ny + nz * nz;
         if (nl < 1e-18f) continue;
@@ -9691,8 +9778,34 @@ static void sgDrawRig(const M34 *wm) {
         nl = sg / sqrtf(nl); nx *= nl; ny *= nl; nz *= nl;
         float dist = sqrtf(ex * ex + ey * ey + ez * ez), shade = clampf(0.62f + 0.38f * (nx * -0.35f + ny * 0.8f + nz * 0.45f), 0.45f, 1.05f);
         V v[3]; const float *pp[3] = { a, b, c };
-        for (int k = 0; k < 3; k++) { toView(pp[k][0], pp[k][1], pp[k][2], &v[k].x, &v[k].y, &v[k].z); fogColor(SG_PAL[SGL_C[t]], shade, dist, &v[k].r, &v[k].g, &v[k].b); }
+        for (int k = 0; k < 3; k++) { toView(pp[k][0], pp[k][1], pp[k][2], &v[k].x, &v[k].y, &v[k].z); fogColor(SG_PAL[MC[t]], shade, dist, &v[k].r, &v[k].g, &v[k].b); }
         emitPoly(v, 3, 0);
+    }
+}
+static void sgDrawRig(const M34 *wm) { sgDrawMesh(wm, SGL_V, SGL_T, SGL_C, SGL_NV, SGL_NT); }       /* personaje del jugador: 181 triangulos */
+static void sgDrawRigLo(const M34 *wm) { sgDrawMesh(wm, SGB_V, SGB_T, SGB_C, SGB_NV, SGB_NT); }     /* soldados: 77 triangulos */
+static int rigBotLod;      /* 1 mientras se dibuja un soldado (no el personaje del jugador): sus armas llevan menos detalle y solo se detallan de cerca */
+#define BOT_WEAP_NEAR 10.0f      /* hasta esta distancia (m) el soldado lleva la malla de su arma; mas lejos, el arma de su modelo (sin triangulos extra) */
+/* cajas rigidas en el espacio del hueso del arma (x0, x1, y0, y1, z0, z1, tipo): complementos baratos, p. ej. el cargador de la ametralladora */
+static void rigWeapBoxes(const M34 *wm, const float (*bxs)[7], int nb) {
+    for (int bi = 0; bi < nb; bi++) {
+        const float *bb = bxs[bi]; float c[8][3];
+        for (int i = 0; i < 8; i++) { float lp[3] = { (i & 1) ? bb[1] : bb[0], (i & 2) ? bb[3] : bb[2], (i & 4) ? bb[5] : bb[4] }; m34Xf(wm, lp, c[i]); }
+        float cxm = 0, cym = 0, czm = 0; for (int i = 0; i < 8; i++) { cxm += c[i][0] / 8; cym += c[i][1] / 8; czm += c[i][2] / 8; }
+        for (int fcs = 0; fcs < 6; fcs++) {
+            const float *p0 = c[FACE[fcs][0]], *p1 = c[FACE[fcs][1]], *p2 = c[FACE[fcs][2]];
+            float ax = p1[0] - p0[0], ay = p1[1] - p0[1], az = p1[2] - p0[2], bx2 = p2[0] - p0[0], by2 = p2[1] - p0[1], bz2 = p2[2] - p0[2];
+            float nx = ay * bz2 - az * by2, ny = az * bx2 - ax * bz2, nz = ax * by2 - ay * bx2, nl = sqrtf(nx * nx + ny * ny + nz * nz); if (nl < 1e-8f) continue;
+            nx /= nl; ny /= nl; nz /= nl;
+            float fx0 = (p0[0] + c[FACE[fcs][2]][0]) * 0.5f, fy0 = (p0[1] + c[FACE[fcs][2]][1]) * 0.5f, fz0 = (p0[2] + c[FACE[fcs][2]][2]) * 0.5f;
+            if (nx * (cxm - fx0) + ny * (cym - fy0) + nz * (czm - fz0) > 0) { nx = -nx; ny = -ny; nz = -nz; }
+            float ex = camX - fx0, ey = camY - fy0, ez = camZ - fz0;
+            if (nx * ex + ny * ey + nz * ez <= 0) continue;
+            float dist = sqrtf(ex * ex + ey * ey + ez * ez), shade = clampf(0.62f + 0.38f * (nx * -0.35f + ny * 0.8f + nz * 0.45f), 0.45f, 1.05f);
+            V v[4];
+            for (int k = 0; k < 4; k++) { const float *pt = c[FACE[fcs][k]]; toView(pt[0], pt[1], pt[2], &v[k].x, &v[k].y, &v[k].z); fogColor(bb[6] > 0.5f ? RGBA(30, 31, 34, 255) : RGBA(48, 50, 55, 255), shade, dist, &v[k].r, &v[k].g, &v[k].b); }
+            emitPoly(v, 4, 0);
+        }
     }
 }
 static const M34 *rigOverG = NULL;      /* si no es NULL, drawRig usa estas matrices de hueso (ragdoll) en vez de la animacion */
@@ -9700,7 +9813,7 @@ static float rigLeanAng, rigLeanPivY;      /* inclinacion lateral del cuerpo (ra
 static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, int weap, float wx, float wy, float wz, float yaw, float tr, float tg, float tb, float flash) {
     if (!sphereVis(wx, wy + 0.9f, wz, 1.8f)) return;     /* fuera de la vista: no se transforma */
     static float tv[600][3];
-    int sgNear = (camX - wx) * (camX - wx) + (camZ - wz) * (camZ - wz) <= 18.0f * 18.0f;       /* cerca: malla M37 (181 triangulos) */
+    int sgNear = (camX - wx) * (camX - wx) + (camZ - wz) * (camZ - wz) <= (rigBotLod ? BOT_WEAP_NEAR * BOT_WEAP_NEAR : 18.0f * 18.0f);       /* cerca: mallas de arma (jugador hasta 18 m; soldados hasta BOT_WEAP_NEAR con menos detalle) */
     SkPose po; M34 G[BN_N];
     if (rigOverG) memcpy(G, rigOverG, sizeof G);
     else {
@@ -9769,7 +9882,8 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
         float dist = sqrtf(ex * ex + ey * ey + ez * ez);
         float shade = clampf(0.62f + 0.38f * (nx * -0.35f + ny * 0.8f + nz * 0.45f), 0.45f, 1.05f) * 1.3f;
         float cr = m->c[f * 3], cg = m->c[f * 3 + 1], cb = m->c[f * 3 + 2];
-        if (part == 5 && weap == 2) { cr = 120; cg = 84; cb = 52; }
+        if (part == 5 && weap == 2) { cr = 120; cg = 84; cb = 52; }      /* escopeta de lejos: el arma del modelo con color de madera */
+        else if (part == 5 && weap == 3) { cr = 50; cg = 53; cb = 58; }      /* ametralladora: metal oscuro */
         u32c col = RGBA((int)clampf(cr * tr, 0, 255), (int)clampf(cg * tg, 0, 255), (int)clampf(cb * tb, 0, 255), 255);
         V v[4];
         for (int k = 0; k < 4; k++) {
@@ -9779,10 +9893,13 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
         }
         emitPoly(v, 4, 0);
     }
-    if (weap == 2 && sgNear) sgDrawRig(&G[BN_WEAP]);       /* escopeta M37 sujeta por el hueso del arma */
-    if (weap == 0 && !g->dead) {       /* pistola: corredera y empunadura, sujetas por el hueso del arma */
-        float lx0 = camX - wx, lz0 = camZ - wz;
-        if (lx0 * lx0 + lz0 * lz0 <= 18.0f * 18.0f) vpDrawRig(&G[BN_WEAP]);       /* cerca: malla VP70 (72 triangulos) */
+    if (weap == 2 && sgNear) { if (rigBotLod) sgDrawRigLo(&G[BN_WEAP]); else sgDrawRig(&G[BN_WEAP]); }       /* escopeta M37 sujeta por el hueso del arma */
+    if (weap == 3 && sgNear) {      /* ametralladora de cerca: cargador de caja y caja de municion sobre el arma del modelo (12 triangulos) */
+        static const float mgb[2][7] = { { 0.150f, 0.190f, 0.930f, 1.080f, -0.640f, -0.480f, 1 }, { 0.146f, 0.194f, 1.130f, 1.165f, -0.560f, -0.440f, 1 } };
+        rigWeapBoxes(&G[BN_WEAP], mgb, 2);
+    }
+    if (weap == 0 && (!g->dead || rigOverG)) {       /* pistola (tambien en el cadaver con ragdoll): corredera y empunadura, sujetas por el hueso del arma */
+        if (sgNear) vpDrawRig(&G[BN_WEAP]);       /* cerca: malla VP70 (72 triangulos) */
         else {                                                                      /* lejos: 3 cajas (x0, x1, y0, y1, z0, z1, tipo: 0 metal, 1 polimero) */
         static const float bxs[3][7] = {
             { 0.149f, 0.191f, 1.117f, 1.168f, -0.62f, -0.293f, 0 },     /* corredera */
@@ -9848,6 +9965,7 @@ static void updateRigs(float dt) {
     }
 }
 static void drawBots(void) {
+    rigBotLod = 1;      /* las armas de los soldados van con menos detalle que las del jugador */
     for (int i = 0; i < nbots; i++) {
         const Bot *b = &bots[i];
         botOcc[i] = 0;
@@ -9858,12 +9976,12 @@ static void drawBots(void) {
               for (int k = 0; k < RD_NP; k++) for (int e = 0; e < 3; e++) { if (q->p[k][e] < mn[e]) mn[e] = q->p[k][e]; if (q->p[k][e] > mx[e]) mx[e] = q->p[k][e]; }
               if (ocHidden(mn[0] - 0.4f, mn[1] - 0.2f, mn[2] - 0.4f, mx[0] + 0.4f, mx[1] + 0.4f, mx[2] + 0.4f)) continue; }      /* cadaver con ragdoll: ligeramente enrojecido segun la herida */
             const Ragdoll *rd = &rds[i]; float tn = 1.0f - 0.28f * rd->wound;
-            rigOverG = rd->G; drawRig(botModel(i), &b->rg, 0.0f, -1.0f, 1, rd->p[RP_HIP][0], rd->p[RP_HIP][1], rd->p[RP_HIP][2], b->yaw, b->team ? 0.8f : 1.0f, b->team ? tn * 0.95f : tn, b->team ? tn * 1.3f : tn, 0); rigOverG = NULL;
+            rigOverG = rd->G; drawRig(botModel(i), &b->rg, 0.0f, -1.0f, b->wep & 3, rd->p[RP_HIP][0], rd->p[RP_HIP][1], rd->p[RP_HIP][2], b->yaw, b->team ? 0.8f : 1.0f, b->team ? tn * 0.95f : tn, b->team ? tn * 1.3f : tn, 0); rigOverG = NULL;
             continue;
         }
 #endif
         if ((botOcc[i] = (unsigned char)ocHidden(b->x - 0.7f, b->py, b->z - 0.7f, b->x + 0.7f, b->py + 2.0f, b->z + 0.7f))) continue;
-        drawRig(botModel(i), &b->rg, b->rg.dead ? 0.0f : b->pitch, b->rl ? clampf(b->rlT / 1.7f, 0, 1) : -1.0f, 1, b->x, b->py, b->z, b->yaw, b->team ? 0.8f : 1.0f, b->team ? 0.95f : 1.0f, b->team ? 1.3f : 1.0f, 0);      /* aliados con tinte azulado */
+        drawRig(botModel(i), &b->rg, b->rg.dead ? 0.0f : b->pitch, b->rl ? clampf(b->rlT / 1.7f, 0, 1) : -1.0f, b->wep & 3, b->x, b->py, b->z, b->yaw, b->team ? 0.8f : 1.0f, b->team ? 0.95f : 1.0f, b->team ? 1.3f : 1.0f, 0);      /* aliados con tinte azulado */
 #ifdef PS2_ONLINE
         if (b->plating) {      /* placa en las manos: sube desde la cadera, se muestra y baja al chaleco */
             float u = clampf(b->plateT / BOT_PLATE_T, 0, 1), s = sinf(b->yaw), c = cosf(b->yaw), cq = b->rg.crouch;
@@ -9873,6 +9991,7 @@ static void drawBots(void) {
         }
 #endif
     }
+    rigBotLod = 0;
 }
 
 static float dbgYaw = 0;   /* solo para pruebas */
@@ -11179,9 +11298,41 @@ void gfx_begin(u32c clear) {
     gsKit_clear(gs, col(clear, 1));
 }
 
+/* Doble buffer sin salto a 30 fps: gsKit_sync_flip espera SIEMPRE un nuevo vblank, asi que un cuadro que tarda 17 ms espera hasta los 33 ms.
+ * Aqui solo se espera si todavia no hubo vblank desde el ultimo cambio de buffer (la marca de la GS queda puesta); si el cuadro ya se paso,
+ * se cambia de inmediato (en un cuadro tardio puede verse un corte). Con GFX_ADAPTIVE_VSYNC 0 vuelve el comportamiento de antes (vsync estricto). */
+#ifndef GFX_ADAPTIVE_VSYNC
+#define GFX_ADAPTIVE_VSYNC 1
+#endif
 void gfx_end(void) {
-    gsKit_queue_exec(gs);
+    gsKit_queue_exec(gs);      /* lanza el DMA del cuadro (asincrono) y pasa al otro bufer de comandos */
+#if GFX_ADAPTIVE_VSYNC
+    while (!(*GS_CSR & 8)) {}      /* si el vblank ya paso, no espera */
+    *GS_CSR = *GS_CSR & 8;         /* rearma la marca de vblank para el proximo cuadro */
+    if (gs->DoubleBuffering == GS_SETTING_ON) {
+        GS_SET_DISPFB2(gs->ScreenBuffer[gs->ActiveBuffer & 1] / 8192, gs->Width / 64, gs->PSM, 0, 0);
+        gs->ActiveBuffer ^= 1;
+    }
+    gsKit_setactive(gs);
+#else
     gsKit_sync_flip(gs);
+#endif
+}
+
+/* Abanico de triangulos Gouraud en UN paquete GIF (formato REGLIST: PRIM en la etiqueta, y por vertice RGBAQ+XYZ2 = 1 qword).
+ * Un cuadrado cuesta 5 qwords (etiqueta + 4 vertices) en lugar de 8 con dos triangulos, y la GS recibe 4 vertices en vez de 6. */
+void gfx_fan(int n, const float *x, const float *y, const int *z, const u32c *c) {
+    if (n < 3) return;
+    if (n > 30) n = 30;
+    int tr = 0; for (int i = 0; i < n; i++) if (CA(c[i]) < 255) tr = 1;      /* con alfa (humo, fuego, trazadoras): mezcla con lo ya dibujado */
+    u64 *p = (u64 *)gsKit_heap_alloc(gs, n, n * 16, GIF_AD);      /* GIF_AD = etiqueta propia: gsKit no la fusiona con otra */
+    u64 prim = GS_SETREG_PRIM(GS_PRIM_PRIM_TRIFAN, 1, 0, gs->PrimFogEnable, tr, gs->PrimAAEnable, 0, gs->PrimContext, 0);
+    *p++ = (u64)n | ((u64)1 << 15) | ((u64)1 << 46) | (prim << 47) | ((u64)GSKIT_GIF_FLG_REGLIST << 58) | ((u64)2 << 60);      /* NLOOP=n, EOP, PRE, PRIM, REGLIST, 2 registros */
+    *p++ = 0x51;      /* RGBAQ (1), XYZ2 (5) */
+    for (int i = 0; i < n; i++) {
+        *p++ = col(c[i], !tr);
+        *p++ = GS_SETREG_XYZ2(gsKit_float_to_int_x(gs, x[i]), gsKit_float_to_int_y(gs, y[i]), z[i]);
+    }
 }
 
 void gfx_tri(float x1, float y1, int z1, u32c c1, float x2, float y2, int z2, u32c c2, float x3, float y3, int z3, u32c c3) {
