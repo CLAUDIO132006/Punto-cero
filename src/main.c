@@ -6632,11 +6632,11 @@ static void rigReload(const Rig *g, SkPose *o, float u) {
 
 
 /* ---------- Configuracion ---------- */
-typedef struct { int diff, bots, rounds, sens, fov, invertY, cross, volume, skin, cam, map, allies, interp; } Settings;      /* bots: enemigos (1-4); allies: aliados que te acompanan (0-3) */
+typedef struct { int diff, bots, rounds, sens, fov, invertY, cross, volume, skin, cam, map, allies, interp, prof; } Settings;      /* bots: enemigos (1-4); allies: aliados que te acompanan (0-3) */
 #ifdef _EE
-static Settings S = { 1, 4, 5, 5, 80, 0, 0, 7, 0, 0, 0, 3, 0 };   /* PS2: primera persona */
+static Settings S = { 1, 4, 5, 5, 80, 0, 0, 7, 0, 0, 0, 3, 0, 0 };   /* PS2: primera persona */
 #else
-static Settings S = { 1, 4, 5, 5, 80, 0, 0, 7, 0, 1, 0, 3, 0 };
+static Settings S = { 1, 4, 5, 5, 80, 0, 0, 7, 0, 1, 0, 3, 0, 0 };
 #endif
 static const char *DIFF_NAMES[] = { "FACIL", "NORMAL", "DIFICIL" };
 static const float DIFF_HP[] = { 70, 100, 130 }, DIFF_REACT[] = { 0.85f, 0.5f, 0.28f };
@@ -10634,7 +10634,7 @@ static void settingsLabels(const char **vals) {
     snprintf(vbuf[3], 24, "%d", S.sens); vals[4] = vbuf[3];
     snprintf(vbuf[4], 24, "%d", S.fov); vals[5] = vbuf[4];
     vals[6] = S.invertY ? "SI" : "NO"; vals[7] = CROSS_NAMES[S.cross];
-    snprintf(vbuf[7], 24, "%d", S.volume); vals[8] = vbuf[7]; vals[9] = SKIN_NAMES[S.skin]; vals[10] = CAM_NAMES[S.cam]; vals[11] = MAPS[S.map].name; vals[12] = S.interp ? "SI" : "NO"; vals[13] = NULL;
+    snprintf(vbuf[7], 24, "%d", S.volume); vals[8] = vbuf[7]; vals[9] = SKIN_NAMES[S.skin]; vals[10] = CAM_NAMES[S.cam]; vals[11] = MAPS[S.map].name; vals[12] = S.interp ? "SI" : "NO"; vals[13] = S.prof ? "SI" : "NO"; vals[14] = NULL;
 }
 static void changeSetting(int i, int dir) {
     switch (i) {
@@ -10650,7 +10650,8 @@ static void changeSetting(int i, int dir) {
     case 11: S.map = (S.map + dir + NMAPS) % NMAPS; if (settingsFrom == M_MENU) { curMap = S.map; buildWorld(); } break;
     case 9: S.skin = (S.skin + dir + 4) % 4; break;
     case 8: S.volume = (int)clampf((float)(S.volume + dir), 0, 10); snd_volume(S.volume); break;
-    case 12: S.interp = !S.interp; break;      /* interpolacion de fotogramas: logica a 30 Hz, imagen a 60 */
+    case 12: S.interp = !S.interp; break;
+    case 13: S.prof = !S.prof; break;      /* perfilador: tiempo y triangulos por seccion */      /* interpolacion de fotogramas: logica a 30 Hz, imagen a 60 */
     }
     snd_play(SND_TICK, 0.6f);
 }
@@ -10713,8 +10714,8 @@ static void cfgText(char *dst, const char *v, int max) {
 static int ceq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
 static void cfgSave(void) {
     char b[600];
-    snprintf(b, 600, "diff=%d\nbots=%d\nallies=%d\nrounds=%d\nsens=%d\nfov=%d\ninvertY=%d\ncross=%d\nvolume=%d\nskin=%d\ncam=%d\nmap=%d\ninterp=%d\nres=%d\nbright=%d\nfull=%d\nname=%s\nip=%s\n",
-             S.diff, S.bots, S.allies, S.rounds, S.sens, S.fov, S.invertY, S.cross, S.volume, S.skin, S.cam, S.map, S.interp, vidCur.res, vidCur.bright, vidCur.full, myName, joinText);
+    snprintf(b, 600, "diff=%d\nbots=%d\nallies=%d\nrounds=%d\nsens=%d\nfov=%d\ninvertY=%d\ncross=%d\nvolume=%d\nskin=%d\ncam=%d\nmap=%d\ninterp=%d\nprof=%d\nres=%d\nbright=%d\nfull=%d\nname=%s\nip=%s\n",
+             S.diff, S.bots, S.allies, S.rounds, S.sens, S.fov, S.invertY, S.cross, S.volume, S.skin, S.cam, S.map, S.interp, S.prof, vidCur.res, vidCur.bright, vidCur.full, myName, joinText);
     pc_cfg_save(b, (int)strlen(b));
 }
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -10730,6 +10731,7 @@ static void cfgLoad(void) {
         else if (ceq(key, "bots")) S.bots = clampi(x, 1, 4);
         else if (ceq(key, "allies")) S.allies = clampi(x, 0, 3);
         else if (ceq(key, "interp")) S.interp = x != 0;
+        else if (ceq(key, "prof")) S.prof = x != 0;
         else if (ceq(key, "rounds")) { for (int j = 0; j < 4; j++) if (ROUND_OPTS[j] == x) S.rounds = x; }
         else if (ceq(key, "sens")) S.sens = clampi(x, 1, 10);
         else if (ceq(key, "fov")) S.fov = clampi(x, 60, 100);
@@ -10792,6 +10794,62 @@ static void fpsDraw(void) {
 #endif
 }
 
+/* ---------- Perfilador (opcion "PERFIL RENDIMIENTO") ----------
+ * Cronometra con el registro Count del EE (294.9 MHz) cada tramo del cuadro y lo muestra en un panel a la izquierda:
+ *   MS   = milisegundos por cuadro (promedio de 1 s) que gasta ese tramo
+ *   TRI  = triangulos enviados a la GS por cuadro en ese tramo
+ *   RECT = rectangulos (sprites) por cuadro. OJO: cada letra del HUD son varios rectangulos, asi que el texto pesa mas de lo que parece.
+ * Los tramos son consecutivos (cada PF(...) asigna al tramo lo que paso desde la marca anterior), asi que la suma de los tramos es el cuadro completo.
+ * "ESTE PANEL" es lo que cuesta dibujar el propio panel (restalo al comparar). "GS ENVIO/VSYNC" es espera, no trabajo de la CPU: si es grande, sobra tiempo.
+ * Apagado no cuesta nada (un if por marca). */
+enum { PF_PLAYER, PF_AI, PF_FX, PF_RIG, PF_MISC, PF_WORLD, PF_BOTS, PF_FXD, PF_WEAPON, PF_HUD, PF_PROF, PF_SOUND, PF_GS, PF_N };
+static const char *const PF_NAME[PF_N] = { "JUGADOR/ARMA LOG", "IA BOTS", "FX/GRANADAS LOG", "ESQUELETOS", "RONDA/OTROS", "ESCENARIO", "SOLDADOS", "GRANADAS/HUMO/FX", "ARMA/MANOS", "HUD/MENUS", "ESTE PANEL", "SONIDO MEZCLA", "GS ENVIO/VSYNC" };
+static unsigned pfMark, pfSndT, pfTriCnt, pfRectCnt, pfMarkTri, pfMarkRect;
+static unsigned pfFT[PF_N], pfFTri[PF_N], pfFRect[PF_N];
+static float pfAcc[PF_N], pfWinT, pfFrameAcc, pfFramePeak, pfPeakWin; static unsigned pfTriAcc[PF_N], pfRectAcc[PF_N]; static int pfN;
+static float pfMs[PF_N], pfFrameMs, pfPeak; static int pfTri[PF_N], pfRect[PF_N];
+static inline unsigned pfCount(void) { unsigned c; __asm__ volatile("mfc0 %0, $9" : "=r"(c)); return c; }
+static void pfTick(int k) {      /* asigna al tramo k todo lo ocurrido desde la marca anterior */
+    unsigned n = pfCount(); pfFT[k] += n - pfMark; pfMark = n;
+    pfFTri[k] += pfTriCnt - pfMarkTri; pfMarkTri = pfTriCnt; pfFRect[k] += pfRectCnt - pfMarkRect; pfMarkRect = pfRectCnt;
+}
+#define PF(k) do { if (S.prof) pfTick(k); } while (0)
+static void pfBegin(void) {
+    if (!S.prof) return;
+    for (int k = 0; k < PF_N; k++) { pfFT[k] = 0; pfFTri[k] = 0; pfFRect[k] = 0; }
+    pfMark = pfCount(); pfMarkTri = pfTriCnt; pfMarkRect = pfRectCnt;
+}
+static void pfEnd(void) {      /* acumula el cuadro y cada segundo actualiza los promedios mostrados */
+    if (!S.prof) return;
+    pfFT[PF_SOUND] += pfSndT; pfSndT = 0;      /* la mezcla de audio se mide en main(), despues de game_frame: entra con un cuadro de retraso */
+    for (int k = 0; k < PF_N; k++) { pfAcc[k] += pfFT[k] * (1000.0f / 294912.0f); pfTriAcc[k] += pfFTri[k]; pfRectAcc[k] += pfFRect[k]; }
+    pfFrameAcc += fpsRawDt * 1000.0f; if (fpsRawDt * 1000.0f > pfPeakWin) pfPeakWin = fpsRawDt * 1000.0f; pfN++; pfWinT += fpsRawDt;
+    if (pfWinT >= 1.0f && pfN > 0) {
+        for (int k = 0; k < PF_N; k++) { pfMs[k] = pfAcc[k] / pfN; pfTri[k] = (int)(pfTriAcc[k] / pfN); pfRect[k] = (int)(pfRectAcc[k] / pfN); pfAcc[k] = 0; pfTriAcc[k] = 0; pfRectAcc[k] = 0; }
+        pfFrameMs = pfFrameAcc / pfN; pfPeak = pfPeakWin; pfFrameAcc = 0; pfPeakWin = 0; pfN = 0; pfWinT = 0;
+    }
+}
+static void pfDraw(void) {
+    if (!S.prof) return;
+    float t = SH / 224.0f, sc = t * 0.62f, st = 7.4f * sc, x0 = 2 * t, y = SH * 0.30f; char b[64];
+    float sum = 0, cpu = 0; int tris = 0, rects = 0;
+    for (int k = 0; k < PF_N; k++) { sum += pfMs[k]; if (k != PF_GS) cpu += pfMs[k]; tris += pfTri[k]; rects += pfRect[k]; }
+    float w = 40 * 6 * sc + 4 * t;
+    gfx_rect(x0 - t, y - t, x0 + w, y + (PF_N + 5) * st + 2 * t, RGBA(0, 0, 0, 170));
+    drawText(x0 + t, y, sc, "TRAMO            MS     TRI  RECT", RGBA(224, 168, 58, 255)); y += st;
+    for (int k = 0; k < PF_N; k++) {
+        int ms100 = (int)(pfMs[k] * 100.0f + 0.5f);
+        snprintf(b, 64, "%-16s%3d.%02d %6d %5d", PF_NAME[k], ms100 / 100, ms100 % 100, pfTri[k], pfRect[k]);
+        float pc = pfFrameMs > 0.01f ? pfMs[k] / pfFrameMs : 0;      /* parte del cuadro: rojo > 30%, ambar > 15% (el tramo GS es espera) */
+        u32c c = k == PF_GS ? RGBA(143, 160, 166, 255) : (pc > 0.30f ? RGBA(229, 72, 77, 255) : (pc > 0.15f ? RGBA(224, 168, 58, 255) : RGBA(232, 236, 233, 255)));
+        drawText(x0 + t, y, sc, b, c); y += st;
+    }
+    int c100 = (int)(cpu * 100.0f + 0.5f), f100 = (int)(pfFrameMs * 100.0f + 0.5f), p100 = (int)(pfPeak * 100.0f + 0.5f), o100 = (int)((pfFrameMs - sum) * 100.0f + 0.5f); if (o100 < 0) o100 = 0;
+    snprintf(b, 64, "%-16s%3d.%02d %6d %5d", "CPU TOTAL", c100 / 100, c100 % 100, tris, rects); drawText(x0 + t, y, sc, b, RGBA(111, 207, 151, 255)); y += st;
+    snprintf(b, 64, "CUADRO %d.%02d MS  PICO %d.%02d MS", f100 / 100, f100 % 100, p100 / 100, p100 % 100); drawText(x0 + t, y, sc, b, RGBA(232, 236, 233, 255)); y += st;
+    snprintf(b, 64, "FUERA (PAD/OTROS) %d.%02d MS  BOTS %d", o100 / 100, o100 % 100, nbots); drawText(x0 + t, y, sc, b, RGBA(143, 160, 166, 255)); y += st;
+}
+
 /* ---------- Interpolacion de fotogramas (opcion "INTERPOLACION 60") ----------
  * Con la opcion activa, la logica (jugador, IA, fisica, armas, granadas, rondas) se ejecuta UNA de cada DOS pasadas por game_frame, con el tiempo real
  * transcurrido (mismas velocidades que antes: no se acelera nada) y solo se dibuja en cada pasada. En la pasada de logica la imagen muestra el punto
@@ -10845,6 +10903,7 @@ void game_frame(const Pad *pd, float dt) {
     float t = SH / 224.0f;
     if (pd->pressed & B_R3) fpsOn = !fpsOn;
     fpsTick();
+    pfBegin();
     /* --- interpolacion de fotogramas: decide si esta pasada ejecuta la logica (ver el bloque de ipCapture/ipApply) --- */
     const float fdt = dt; float ldt = dt; int doLogic = 1; const Pad *pd0 = pd; Pad pdc;
     ipAvg += (fpsRawDt - ipAvg) * 0.08f;
@@ -10887,6 +10946,7 @@ void game_frame(const Pad *pd, float dt) {
         }
         snd_listener(P.x, P.z, P.yaw);
         updateWeapon(gp, dt, canAct);
+        PF(PF_PLAYER);
         if (sandbox) {
 #ifdef PS2_ONLINE
             if (canAct && (pd->pressed & B_DOWN) && !(pd->down & B_L1)) labSpawn();
@@ -10902,6 +10962,7 @@ void game_frame(const Pad *pd, float dt) {
             P.hp = 100;
         }
         updateBots(dt, canAct);
+        PF(PF_AI);
 #ifdef PS2_ONLINE
         bfUpdateNades(dt); if (!interpOn) { bfUpdateFx(dt); goreUpdate(dt); }
         for (int i = 0; i < 4; i++) if (bfDT[i] > 0) bfDT[i] -= dt;
@@ -10916,7 +10977,9 @@ void game_frame(const Pad *pd, float dt) {
 #ifdef PC_ONLINE
         mpUpdateRemote(dt);
 #endif
+        PF(PF_FX);
         if (!interpOn) updateRigs(dt);
+        PF(PF_RIG);
         if (mode == M_ROUNDEND) {
             afterT -= dt;
             if (afterT <= 0) {
@@ -10944,7 +11007,7 @@ void game_frame(const Pad *pd, float dt) {
         if (mode == M_PLAYING && (pd->pressed & B_START)) { mode = M_PAUSE; sel = 0; prevMode = M_PLAYING; }
         dt = fdt; }      /* fin de la logica */
 #ifdef PS2_ONLINE
-        if (interpOn) { bfUpdateFx(dt); goreUpdate(dt); }      /* efectos visuales: en cada pasada */
+        if (interpOn) { bfUpdateFx(dt); goreUpdate(dt); PF(PF_FX); }      /* efectos visuales: en cada pasada */
 #endif
     } else if (mode == M_PAUSE && sandbox) {
         menuNav(pd, 5);
@@ -11017,10 +11080,10 @@ void game_frame(const Pad *pd, float dt) {
         if (pd->pressed & B_CROSS) { if (sel == 0) labStart(); else if (sel == 3) { mode = M_MENU; sel = 0; } else labSet(sel, 1); }
         if (pd->pressed & B_CIRCLE) { mode = M_MENU; sel = 0; }
     } else if (mode == M_SETTINGS) {
-        orbit += dt * 0.08f; menuNav(pd, 14);
+        orbit += dt * 0.08f; menuNav(pd, 15);
         if (pd->pressed & B_LEFT) changeSetting(sel, -1);
-        if (pd->pressed & (B_RIGHT | (sel < 13 ? B_CROSS : 0))) changeSetting(sel, 1);
-        if (((pd->pressed & B_CROSS) && sel == 13) || (pd->pressed & B_CIRCLE)) {
+        if (pd->pressed & (B_RIGHT | (sel < 14 ? B_CROSS : 0))) changeSetting(sel, 1);
+        if (((pd->pressed & B_CROSS) && sel == 14) || (pd->pressed & B_CIRCLE)) {
             mode = settingsFrom;
 #ifdef PC_ONLINE
             sel = settingsFrom == M_PAUSE ? 1 : 2; cfgSave();
@@ -11104,8 +11167,11 @@ void game_frame(const Pad *pd, float dt) {
     int ipSubst = 0;
     if (interpOn && (mode == M_PLAYING || mode == M_ROUNDEND)) {
         if (doLogic && freeze <= 0) { ipApply(0.5f); ipSubst = 1; }      /* pasada de logica: se dibuja el punto medio entre el paso anterior y el nuevo */
+        PF(PF_MISC);
         updateRigs(dt);      /* esqueletos de los soldados: cada pasada, con las posiciones que se van a dibujar */
+        PF(PF_RIG);
     }
+    PF(PF_MISC);
     gfx_begin(SKY);
     if (inGame) {
         float bob = P.ground ? sinf(P.bob * 2) * 0.035f * clampf(sqrtf(P.vx * P.vx + P.vz * P.vz) / 5, 0, 1) : 0;
@@ -11147,14 +11213,18 @@ void game_frame(const Pad *pd, float dt) {
         if (ocHidden(b->x0, b->bot, b->z0, b->x1, b->top, b->z1)) continue;
         obox((b->x0 + b->x1) * .5f, (b->top + b->bot) * .5f, (b->z0 + b->z1) * .5f, (b->x1 - b->x0) * .5f, (b->top - b->bot) * .5f, (b->z1 - b->z0) * .5f, 0, b->col);
     }
+    PF(PF_WORLD);
     specSkip = (!P.alive && mode == M_PLAYING && !sandbox && !netMode) ? specBot() : -1;      /* el aliado que observas no se dibuja: la camara esta en su cabeza */
     drawBots();
+    PF(PF_BOTS);
 #ifdef PS2_ONLINE
     bfDrawNades();
 #endif
+    PF(PF_FXD);
     if (inGame && S.cam) drawPlayerChar();
     if (inGame && !S.cam) drawPlayerLegs();
     if (inGame && P.alive && !S.cam) { drawWeaponModel(); drawHelmetRim(); }
+    PF(PF_WEAPON);
     if (inGame && mode != M_PAUSE) drawHud();
     if (mode == M_MENU) {
         drawMenuBg(); drawTitle();
@@ -11188,9 +11258,9 @@ void game_frame(const Pad *pd, float dt) {
         drawTextC(SW * 0.5f, SH * 0.92f - 6 * t, t * 0.7f, "IZQ/DER CAMBIAR   X ACEPTAR   O VOLVER", RGBA(143, 160, 166, 255));
     } else if (mode == M_SETTINGS) {
         drawMenuBg(); drawTextC(SW * 0.5f, SH * 0.08f, t * 3.0f, "CONFIGURACION", RGBA(232, 236, 233, 255));
-        const char *it[] = { "DIFICULTAD", "BOTS ENEMIGOS", "BOTS ALIADOS", "RONDAS PARA GANAR", "SENSIBILIDAD", "CAMPO DE VISION", "INVERTIR EJE Y", "COLOR DE MIRA", "VOLUMEN", "SKIN ENEMIGOS", "CAMARA", "MAPA", "INTERPOLACION 60", "VOLVER" };
-        const char *vals[14]; settingsLabels(vals);
-        listRs = 0.86f; drawList(it, vals, 14, SH * 0.12f); listRs = 1.0f;
+        const char *it[] = { "DIFICULTAD", "BOTS ENEMIGOS", "BOTS ALIADOS", "RONDAS PARA GANAR", "SENSIBILIDAD", "CAMPO DE VISION", "INVERTIR EJE Y", "COLOR DE MIRA", "VOLUMEN", "SKIN ENEMIGOS", "CAMARA", "MAPA", "INTERPOLACION 60", "PERFIL RENDIMIENTO", "VOLVER" };
+        const char *vals[15]; settingsLabels(vals);
+        listRs = 0.8f; drawList(it, vals, 15, SH * 0.12f); listRs = 1.0f;
         { char tb[64]; snprintf(tb, 64, "TU EQUIPO: %d   ENEMIGOS: %d   IZQ/DER CAMBIAR   O VOLVER", (int)clampf((float)S.allies, 0, 3) + 1, (int)clampf((float)S.bots, 1, 4)); drawTextC(SW * 0.5f, SH - 8 * t, t * 0.7f, tb, RGBA(143, 160, 166, 255)); }
     } else if (mode == M_PAUSE && sandbox) {
         drawMenuBg(); drawTextC(SW * 0.5f, SH * 0.16f, t * 4.0f, "PAUSA", RGBA(232, 236, 233, 255)); drawTextC(SW * 0.5f, SH * 0.16f + 34 * t, t * 0.9f, "CAMPO DE PRUEBAS", RGBA(224, 128, 58, 255));
@@ -11288,8 +11358,13 @@ void game_frame(const Pad *pd, float dt) {
     if (mpNoticeT > 0 && mode != M_PLAYING) drawTextC(SW * 0.5f, SH * 0.86f, t * 0.9f, mpNotice, RGBA(224, 128, 58, 255));
 #endif
     fpsDraw();
+    PF(PF_HUD);
+    pfDraw();
+    PF(PF_PROF);
     if (ipSubst) ipRestore();      /* la logica vuelve a ver sus valores reales */
     gfx_end();
+    PF(PF_GS);
+    pfEnd();
 }
 
 /* macros propias de game.c: se liberan para no afectar a los archivos que siguen */
@@ -11413,6 +11488,7 @@ void gfx_end(void) {
 void gfx_fan(int n, const float *x, const float *y, const int *z, const u32c *c) {
     if (n < 3) return;
     if (n > 30) n = 30;
+    pfTriCnt += n - 2;
     int tr = 0; for (int i = 0; i < n; i++) if (CA(c[i]) < 255) tr = 1;      /* con alfa (humo, fuego, trazadoras): mezcla con lo ya dibujado */
     u64 *p = (u64 *)gsKit_heap_alloc(gs, n, n * 16, GIF_AD);
     u64 prim = GS_SETREG_PRIM(GS_PRIM_PRIM_TRIFAN, 1, 0, gs->PrimFogEnable, tr, gs->PrimAAEnable, 0, gs->PrimContext, 0);
@@ -11431,6 +11507,7 @@ void gfx_fan(int n, const float *x, const float *y, const int *z, const u32c *c)
 #endif
 
 void gfx_tri(float x1, float y1, int z1, u32c c1, float x2, float y2, int z2, u32c c2, float x3, float y3, int z3, u32c c3) {
+    pfTriCnt++;
     int tr = CA(c1) < 255 || CA(c2) < 255 || CA(c3) < 255;      /* triangulos con alfa (humo, fuego, trazadoras): mezcla con lo ya dibujado */
     gs->PrimAlphaEnable = tr ? GS_SETTING_ON : GS_SETTING_OFF;
     gsKit_prim_triangle_gouraud_3d(gs, x1, y1, z1, x2, y2, z2, x3, y3, z3, col(c1, !tr), col(c2, !tr), col(c3, !tr));
@@ -11438,6 +11515,7 @@ void gfx_tri(float x1, float y1, int z1, u32c c1, float x2, float y2, int z2, u3
 }
 
 void gfx_rect(float x1, float y1, float x2, float y2, u32c c) {
+    pfRectCnt++;
     int translucent = CA(c) < 255;
     gs->PrimAlphaEnable = translucent ? GS_SETTING_ON : GS_SETTING_OFF;
     gsKit_prim_sprite(gs, x1, y1, x2, y2, 0xFFFFFF, col(c, !translucent));
@@ -11583,7 +11661,7 @@ int main(void) {
         if (dt < 0.005f) dt = 0.005f;
         if (dt > 0.05f) dt = 0.05f;      /* tope: evita saltos enormes si hay una pausa larga (carga, etc.) */
         game_frame(&p, dt);
-        audio_pump();
+        { unsigned a0 = pfCount(); audio_pump(); pfSndT += pfCount() - a0; }      /* mezcla de audio: para el perfilador */
     }
     return 0;
 }
