@@ -6473,7 +6473,10 @@ enum { BN_PELVIS, BN_CHEST, BN_HEAD, BN_THIGH_L, BN_SHIN_L, BN_FOOT_L, BN_THIGH_
 typedef struct { float m[12]; } M34;                     /* matriz 3x4 por filas */
 typedef struct { float r[BN_N][3], t[BN_N][3], root[4]; } SkPose;     /* rotaciones (x,y,z), traslaciones, raiz: rotX, rotZ, y, z */
 typedef struct { float phase, legYaw, crouch, aim, run, spd, vfS, vsS, recoil, t, deadT, yawRate, prevYaw, air; int dead, deadKind, init, pist; } Rig;   /* pist: pistola = una sola mano */
-typedef struct { float vx, vz, yaw, pitch, reloadU; int crouch, aim, fired, alive, air; } RigIn;
+typedef struct { float vx, vz, yaw, pitch, reloadU; int crouch, aim, fired, alive, air, prone; } RigIn;      /* prone: acostado boca abajo */
+#ifndef PRONE_CR
+#define PRONE_CR 2.17f      /* valor de "cr" acostado: la camara queda a ~0,5 m y la caja de impacto a ~0,45 m (las formulas de altura ya usan cr) */
+#endif
 
 /* ---------- Esqueleto: matrices, pose y piel ---------- */
 static const signed char BN_PARENT[BN_N] = { -1, 0, 1, 0, 3, 4, 0, 6, 7, 1, 9, 9 };
@@ -6531,7 +6534,11 @@ static void rigUpdate(Rig *g, const RigIn *in, float dt) {
     float yr = clampf(angDiff(in->yaw, g->prevYaw) / (dt > 1e-4f ? dt : 1e-4f), -12, 12); g->prevYaw = in->yaw;
     g->yawRate = lerpf(g->yawRate, yr, clampf(dt * 12, 0, 1));
     g->run = lerpf(g->run, clampf((g->spd - 2.9f) / 2.3f, 0, 1), clampf(dt * 8, 0, 1));
-    g->crouch = lerpf(g->crouch, in->crouch ? 1.0f : 0.0f, clampf(dt * 9, 0, 1));
+    {   /* g->crouch: 0 de pie, 1 agachado, PRONE_CR acostado. De pie<->agachado sigue igual; hacia/desde el suelo va a velocidad constante en dos tiempos */
+        float tc = in->prone ? PRONE_CR : (in->crouch ? 1.0f : 0.0f);
+        if (tc > 1.0f || g->crouch > 1.0f) { float st = dt * 3.4f; g->crouch += clampf(tc - g->crouch, -st, st); }
+        else g->crouch = lerpf(g->crouch, tc, clampf(dt * 9, 0, 1));
+    }
     g->aim = lerpf(g->aim, in->aim ? 1.0f : 0.0f, clampf(dt * 9, 0, 1));
     g->air = lerpf(g->air, in->air ? 1.0f : 0.0f, clampf(dt * 10, 0, 1));
     if (in->fired) g->recoil = 1;
@@ -6577,30 +6584,33 @@ static void rigDeadPose(const Rig *g, SkPose *o) {
 static void rigPose(const Rig *g, SkPose *o) {
     memset(o, 0, sizeof(*o));
     if (g->dead) { rigDeadPose(g, o); return; }
-    float c = g->crouch, ph = g->phase, run = g->run, spd = g->spd;
+    float pr = clampf((g->crouch - 1.0f) / (PRONE_CR - 1.0f), 0, 1), fall = sstep(0.0f, 1.0f, pr), land = bump(pr, 0.55f, 0.85f, 0.88f, 1.0f);      /* fall: cuanto se ha tirado al suelo; land: rebote al apoyar el pecho */
+    float c = fminf(g->crouch, 1.0f) * (1 - fall), ph = g->phase, run = g->run, spd = g->spd, lyw = g->legYaw * (1 - fall);
     float gait = clampf(spd / 1.2f, 0, 1), turnAmp = clampf(fabsf(g->yawRate) / 3.0f, 0, 1) * (spd < 0.25f ? 1 : 0);
-    float amt = fmaxf(gait, turnAmp * 0.5f);
+    float amt0 = fmaxf(gait, turnAmp * 0.5f), amt = amt0 * (1 - fall), amc = amt0 * fall;      /* amt: andar de pie; amc: arrastrarse */
     float A = lerpf(0.42f, 0.85f, run) * amt * lerpf(1.0f, 0.6f, c);
     float K = lerpf(0.60f, 1.35f, run) * amt * lerpf(1.0f, 0.7f, c);
     float sp = sinf(ph);
     for (int i = 0; i < 2; i++) {
         float s = sinf(ph + (i ? PI : 0)), cs = cosf(ph + (i ? PI : 0));
         int th = i ? BN_THIGH_R : BN_THIGH_L, sh = i ? BN_SHIN_R : BN_SHIN_L, ft = i ? BN_FOOT_R : BN_FOOT_L;
-        float alpha = A * s + 1.35f * c + 0.40f * g->air * (i ? 1.0f : 0.5f);
-        float beta = K * fmaxf(0, cs) + 0.05f * amt + 1.85f * c + 0.65f * g->air * (i ? 1.0f : 0.5f);
+        float alpha = A * s + 1.35f * c + 0.40f * g->air * (i ? 1.0f : 0.5f) + (0.22f * s + (i ? 0.10f : -0.04f)) * fall * (0.4f + 0.6f * amc);      /* acostado: las piernas se estiran y al arrastrarse reptan */
+        float beta = K * fmaxf(0, cs) + 0.05f * amt + 1.85f * c + 0.65f * g->air * (i ? 1.0f : 0.5f) + (0.60f * fmaxf(0, cs) * amc + 0.25f * fall * (i ? 1.0f : 0.4f));
         float toe = 0.35f * fmaxf(0, cs) * fmaxf(0, -s) * amt;
-        o->r[th][0] = alpha; o->r[sh][0] = -beta; o->r[ft][0] = -(alpha - beta) - toe;
+        o->r[th][0] = alpha; o->r[sh][0] = -beta; o->r[ft][0] = -(alpha - beta) - toe + 0.45f * fall;      /* acostado: las puntas de los pies apoyadas en el suelo */
     }
     float bob = fabsf(sp) * lerpf(0.030f, 0.060f, run) * amt;
     float tw = 0.10f * amt * sp;
     o->t[BN_PELVIS][0] = 0.02f * amt * sp; o->t[BN_PELVIS][1] = -bob - 0.28f * c - 0.05f * g->air; o->t[BN_PELVIS][2] = 0.19f * c;
-    o->r[BN_PELVIS][1] = -g->legYaw + tw; o->r[BN_PELVIS][2] = 0.05f * amt * sp + 0.012f * sinf(g->t * 0.9f) * (1 - amt);
-    o->r[BN_CHEST][1] = g->legYaw * 0.7f - tw * 0.8f; o->r[BN_CHEST][2] = -0.6f * o->r[BN_PELVIS][2];
-    o->r[BN_HEAD][1] = g->legYaw * 0.3f - tw * 0.2f;
-    o->r[BN_CHEST][0] = -(0.04f + 0.12f * run) * amt - 0.28f * c + 0.012f * sinf(g->t * 1.6f) * (1 - amt);
+    o->r[BN_PELVIS][1] = -lyw + tw; o->r[BN_PELVIS][2] = 0.05f * amt * sp + 0.012f * sinf(g->t * 0.9f) * (1 - amt) + 0.10f * amc * sp;      /* acostado: la cadera ondula de lado a lado */
+    o->r[BN_CHEST][1] = lyw * 0.7f - tw * 0.8f; o->r[BN_CHEST][2] = -0.6f * o->r[BN_PELVIS][2];
+    o->r[BN_HEAD][1] = lyw * 0.3f - tw * 0.2f;
+    o->r[BN_CHEST][0] = -(0.04f + 0.12f * run) * amt - 0.28f * c + 0.012f * sinf(g->t * 1.6f) * (1 - amt) + 0.30f * fall - 0.10f * land;      /* acostado: pecho algo arqueado, con un golpecito al apoyarse */
+    o->r[BN_HEAD][0] += 1.20f * fall;      /* acostado: la cabeza se levanta para mirar al frente */
+    o->root[0] = -1.50f * fall; o->root[2] = (0.17f - 0.04f * land) * fall; o->root[3] = 0.78f * fall;      /* el cuerpo gira alrededor de los pies hasta quedar tumbado boca abajo (centrado en su posicion) */
     /* brazos: arma baja al caminar, arriba al apuntar; el retroceso y la recarga se suman */
-    float low = lerpf(-0.50f, -0.80f, run) * (1 - g->aim);
-    o->r[BN_ARMS][0] = low + 0.02f * sinf(ph * 2) * amt + 0.07f * g->recoil;
+    float low = lerpf(-0.50f, -0.80f, run) * (1 - g->aim) * (1 - fall);
+    o->r[BN_ARMS][0] = low + 0.02f * sinf(ph * 2) * amt + 0.07f * g->recoil + 1.55f * fall + 0.45f * sinf(pr * PI) * (1 - g->aim);      /* acostado: el arma apunta a lo largo del cuerpo; al caer los brazos se adelantan para frenar el golpe */
     o->t[BN_WEAP][2] = 0.06f * g->recoil; o->r[BN_WEAP][0] = 0.05f * g->recoil;
     o->r[BN_ARMS][2] = 0.015f * sinf(ph) * amt;
     if (g->pist) {      /* pistola: la mano izquierda queda libre y cuelga con naturalidad, sin sujetar el arma */
@@ -7403,7 +7413,7 @@ static void drawTextC(float cx, float y, float sc, const char *s, u32c col) { dr
 typedef struct { const char *name; float dmg, rpm; int autof, mag, reserve; float spread, recoil; int pellets; float reload; } Weapon;
 static const Weapon W[4] = {
     { "PISTOLA", 26, 380, 0, 12, 60, 0.004f, 0.016f, 1, 1.3f },
-    { "RIFLE", 22, 640, 1, 30, 90, 0.008f, 0.013f, 1, 2.0f },
+    { "AK-47", 22, 640, 1, 30, 90, 0.008f, 0.013f, 1, 2.0f },
     { "ESCOPETA", 12, 80, 0, 6, 24, 0.05f, 0.05f, 8, 3.2f },
     { "AMETRALLADORA", 18, 780, 1, 100, 200, 0.014f, 0.011f, 1, 3.6f }
 };
@@ -7412,7 +7422,7 @@ static const Weapon W[4] = {
 enum { M_MENU, M_SETTINGS, M_PLAYING, M_ROUNDEND, M_PAUSE, M_END, M_OPTIONS, M_MP_MENU, M_MP_LOBBY, M_KEYS, M_CODE, M_LAB };
 typedef struct { float x, y, z, vx, vy, vz, yaw, pitch, hp; int alive, ground; float noise, bob, cr; int crWant; int prone; } Player;      /* cr: 0 de pie, 1 agachado, PRONE_CR acostado; prone: esta acostado */
 static Rig pRig; static int pFired;      /* animacion del jugador (tercera persona) */
-typedef struct { float x, z, yaw, hp; int alive, state, burst; float react, fireCD, pause, strafe, strafeT, wx, wz, lkx, lkz, lost, timer, dead, step, walk, mv; int remote, wep, shots; float tx, ty, tz, tyaw, py, pitch; Rig rg; float cr, aimW, hitT, coverX, coverZ, coverT, peekT, px, pz, rlT; int crWant, cov, fireEv, rl; short path[48]; int pn, pi; float pgx, pgz, repT, stuck; int dummy, unused; float armor, plateT; int plates, plating; float hearT; int lkl, wl, pgl; float dirT, skipT; int dirOk; float aiT, cmx, cmz, cspd, cface; int aiInit, lod, team, tgt; float shotT, tgT; } Bot;      /* team: 0 enemigo, 1 aliado; tgt: objetivo (-1 jugador, >=0 bot, -2 ninguno); shotT: tiempo desde su ultimo disparo; tgT: tiempo hasta reelegir objetivo */      /* AI LOD: aiT = tiempo desde la ultima decision; cmx/cmz/cspd/cface = ultima direccion, velocidad y orientacion decididas */   /* lkl/wl/pgl: piso (0/1) de la ultima posicion conocida, del destino de patrulla y del camino; dummy: soldado quieto del modo secreto; unused: ranura libre */
+typedef struct { float x, z, yaw, hp; int alive, state, burst; float react, fireCD, pause, strafe, strafeT, wx, wz, lkx, lkz, lost, timer, dead, step, walk, mv; int remote, wep, shots; float tx, ty, tz, tyaw, py, pitch; Rig rg; float cr, aimW, hitT, coverX, coverZ, coverT, peekT, px, pz, rlT; int crWant, cov, fireEv, rl, prone, proneP; short path[48]; int pn, pi; float pgx, pgz, repT, stuck; int dummy, unused; float armor, plateT; int plates, plating; float hearT; int lkl, wl, pgl; float dirT, skipT; int dirOk; float aiT, cmx, cmz, cspd, cface; int aiInit, lod, team, tgt; float shotT, tgT; } Bot;      /* team: 0 enemigo, 1 aliado; tgt: objetivo (-1 jugador, >=0 bot, -2 ninguno); shotT: tiempo desde su ultimo disparo; tgT: tiempo hasta reelegir objetivo */      /* AI LOD: aiT = tiempo desde la ultima decision; cmx/cmz/cspd/cface = ultima direccion, velocidad y orientacion decididas */   /* lkl/wl/pgl: piso (0/1) de la ultima posicion conocida, del destino de patrulla y del camino; dummy: soldado quieto del modo secreto; unused: ranura libre */
 
 #define PRONE_CR 2.17f      /* valor de "cr" acostado: la camara queda a ~0,5 m y la caja de impacto a ~0,45 m (las formulas de altura ya usan cr) */
 static Player P;
@@ -8797,7 +8807,7 @@ static void mpHandle(Pk *p, unsigned ip, int port) {
         Bot *b = &bots[0];
         b->tx = rdf(p); b->ty = rdf(p); b->tz = rdf(p); b->tyaw = rdf(p); b->pitch = rdf(p);
         int alive = rd8(p); b->hp = (float)rd8(p); b->wep = rd8(p); int shots = rd8(p);
-        int fl = rd8(p); b->crWant = fl & 1; b->aimW = (fl & 2) ? 1.0f : 0.0f; if ((fl & 4) && !b->rl) b->rlT = 0; b->rl = (fl & 4) != 0;
+        int fl = rd8(p); b->crWant = fl & 1; b->prone = (fl & 8) != 0; b->aimW = (fl & 2) ? 1.0f : 0.0f; if ((fl & 4) && !b->rl) b->rlT = 0; b->rl = (fl & 4) != 0;
         if (shots != (b->shots & 255)) { b->fireEv = 1; snd_play3d(SND_PISTOL + (b->wep == 3 ? 1 : (b->wep & 3)), b->x, b->z, 1.0f); b->shots = shots; }
         if (!alive && b->alive && mode == M_PLAYING) { b->rg.deadKind = deadPick(b, rand() % 3);
 #ifdef PS2_ONLINE
@@ -8831,7 +8841,7 @@ static void mpPump(float dt) {
         if (mpTx >= 1.0f / 30.0f) {
             mpTx = 0; Pk q; pkBegin(&q, PK_STATE); pk16(&q, ++mySeq); pk8(&q, curTag);
             pkf(&q, P.x); pkf(&q, P.y); pkf(&q, P.z); pkf(&q, P.yaw); pkf(&q, P.pitch);
-            pk8(&q, P.alive); pk8(&q, (int)P.hp); pk8(&q, wsel); pk8(&q, mpShots & 255); pk8(&q, (P.crWant ? 1 : 0) | (anAim > 0.5f ? 2 : 0) | (wReload > 0 ? 4 : 0)); mpSend(&q);
+            pk8(&q, P.alive); pk8(&q, (int)P.hp); pk8(&q, wsel); pk8(&q, mpShots & 255); pk8(&q, (P.crWant ? 1 : 0) | (anAim > 0.5f ? 2 : 0) | (wReload > 0 ? 4 : 0) | (P.prone ? 8 : 0)); mpSend(&q);
         }
     } else if (mpPing >= 0.4f) { mpPing = 0; Pk q; pkBegin(&q, PK_PING); mpSend(&q); }
 }
@@ -9030,9 +9040,9 @@ static void updateBots(float dt, int active) {
                 } else
     #endif
                 b->timer -= adt;
-                if (!b->plating && (b->timer <= 0 || (b->hitT > 0 && b->timer < 1.0f))) { b->state = BS_PEEK; b->peekT = rndf(1.6f, 3.0f); b->burst = botBurstN(b, 2 + rand() % 3); b->cov = rand() % 2; b->fireCD = 0.2f; }
+                if (!b->plating && (b->timer <= 0 || (b->hitT > 0 && b->timer < 1.0f))) { b->state = BS_PEEK; b->peekT = rndf(1.6f, 3.0f); b->burst = botBurstN(b, 2 + rand() % 3); b->cov = rand() % 2; b->proneP = dist > 12.0f && (rand() % 100) < 50;      /* de lejos a veces asoma acostado */ b->fireCD = 0.2f; }
             } else if (b->state == BS_PEEK) {           /* asoma: apunta y dispara agachado o de pie */
-                face = toYaw; b->crWant = b->cov; b->peekT -= adt; b->fireCD -= adt;
+                face = toYaw; b->crWant = b->cov || b->proneP; b->prone = b->proneP; b->peekT -= adt; b->fireCD -= adt;
                 if (sees && b->fireCD <= 0 && fabsf(dyaw) < 0.5f && dist < BWP[b->wep & 3].range) { b->fireCD = DIFF_FIRE[di] * BWP[b->wep & 3].fireMul * rndf(0.9f, 1.3f); botShoot(b, dist, tg); b->fireEv = 1; if (--b->burst <= 0) b->peekT = 0; }
                 if (b->peekT <= 0) { if (b->hp < DIFF_HP[di] * 0.5f && rand() % 2) { b->state = BS_HIDE; b->timer = rndf(1.5f, 3.0f); } else { b->state = BS_ENGAGE; b->crWant = 0; } }
             } else {
@@ -9273,12 +9283,10 @@ static const VoxBox VOXB[] = {
     { BN_HEAD, -.10f, .10f, 1.47f, 1.51f, -.15f, -.14f, VC_EYE, 0, 0 },                /* sombra de los ojos */
     { BN_HEAD, -.18f, .18f, 1.52f, 1.76f, -.17f, .18f, VC_HELM, 0, 0 },                /* casco */
     { BN_ARMS, .21f, .35f, 1.14f, 1.30f, -.12f, .02f, VC_SLV, 0, 0 },                  /* hombro derecho */
-    { BN_ARMS, .21f, .33f, 1.05f, 1.19f, -.42f, -.04f, VC_SLV, 0, 0 },                 /* brazo derecho */
-    { BN_ARMS, .12f, .23f, 1.03f, 1.13f, -.46f, -.34f, VC_GLOVE, 0, 0 },               /* mano derecha (empunadura) */
+    { BN_ARMS, .21f, .33f, 1.05f, 1.19f, -.36f, -.04f, VC_SLV, 0, 0 },                 /* brazo derecho (acortado) */
     { BN_ARMS, -.36f, -.22f, .96f, 1.30f, -.12f, .02f, VC_SLV, 0, 0 },                 /* brazo izquierdo */
-    { BN_FORE_L, -.34f, -.20f, .95f, 1.09f, -.50f, -.04f, VC_SLV, 0, 0 },              /* antebrazo izquierdo (1) */
-    { BN_FORE_L, -.20f, .00f, .96f, 1.08f, -.64f, -.48f, VC_SLV, 0, 0 },               /* antebrazo izquierdo (2) */
-    { BN_FORE_L, .00f, .15f, .97f, 1.09f, -.72f, -.52f, VC_GLOVE, 0, 0 },              /* mano izquierda (guardamano) */
+    { BN_FORE_L, -.34f, -.20f, .95f, 1.09f, -.38f, -.04f, VC_SLV, 0, 0 },              /* antebrazo izquierdo (1) (acortado) */
+    { BN_FORE_L, -.20f, .13f, .96f, 1.08f, -.50f, -.36f, VC_SLV, 0, 0 },               /* antebrazo izquierdo (2) */
     { BN_THIGH_L, -.29f, -.09f, .47f, .78f, -.10f, .10f, VC_UNI, 0, 1 },
     { BN_THIGH_R, .09f, .29f, .47f, .78f, -.10f, .10f, VC_UNI, 0, 1 },
     { BN_SHIN_L, -.28f, -.10f, .22f, .47f, -.09f, .09f, VC_UNI, 0, 0 },
@@ -9784,11 +9792,269 @@ static const unsigned char SGB_C[SGB_NT] = {
 };
 static const u32c SG_PAL[10] = { RGBA(46, 49, 55, 255), RGBA(74, 78, 86, 255), RGBA(92, 96, 104, 255), RGBA(116, 78, 46, 255), RGBA(130, 90, 54, 255),
                                  RGBA(92, 60, 34, 255), RGBA(38, 40, 45, 255), RGBA(118, 122, 130, 255), RGBA(60, 63, 70, 255), RGBA(224, 128, 58, 255) };
+/* ---------- AK-47 (convertida de AK47_V01.obj: 3093 vertices y 2982 caras -> mallas de prismas de colores planos) ----------
+ * Cada pieza (culata, empunadura, caja, tapa, cargador, guardamano, canon, miras) es el perfil lateral del modelo original extruido en x.
+ *   AKM: primera persona, 240 triangulos (culata recortada: no se ve; el cargador va al final y se oculta al recargar)
+ *   AKL: personaje del jugador en tercera persona, 256 triangulos   AKB: soldados, 112 triangulos
+ * Espacio del arma: +z hacia la boca del canon, +y arriba; el punto de agarre de la empunadura es (0, AK_GY, AK_GZ), el mismo del fusil anterior. */
+#define AK_GY -0.0850f
+#define AK_GZ -0.0750f
+static const u32c AK_PAL[8] = { RGBA(40, 43, 48, 255), RGBA(62, 66, 73, 255), RGBA(88, 92, 100, 255), RGBA(138, 72, 30, 255), RGBA(156, 86, 38, 255), RGBA(104, 52, 22, 255), RGBA(24, 25, 28, 255), RGBA(56, 60, 66, 255) };
+#define AKM_NV 152
+#define AKM_NT 240
+#define AKM_NTB 212      /* triangulos del cuerpo; el resto es el cargador */
+static const float AKM_V[AKM_NV * 3] = {
+    -0.0265f, -0.0700f, -0.2280f, -0.0265f, -0.0381f, -0.1178f, -0.0265f, 0.0020f, -0.1178f,
+    -0.0265f, 0.0058f, -0.2280f, 0.0265f, -0.0700f, -0.2280f, 0.0265f, -0.0381f, -0.1178f,
+    0.0265f, 0.0020f, -0.1178f, 0.0265f, 0.0058f, -0.2280f, -0.0296f, -0.1238f, -0.1206f,
+    -0.0296f, -0.1353f, -0.1083f, -0.0296f, -0.1462f, -0.0832f, -0.0296f, -0.1387f, -0.0736f,
+    -0.0296f, -0.0564f, -0.0403f, -0.0296f, -0.0381f, -0.0342f, -0.0296f, -0.0381f, -0.0988f,
+    0.0296f, -0.1238f, -0.1206f, 0.0296f, -0.1353f, -0.1083f, 0.0296f, -0.1462f, -0.0832f,
+    0.0296f, -0.1387f, -0.0736f, 0.0296f, -0.0564f, -0.0403f, 0.0296f, -0.0381f, -0.0342f,
+    0.0296f, -0.0381f, -0.0988f, -0.0265f, -0.0388f, -0.1185f, -0.0265f, -0.0381f, 0.0977f,
+    -0.0265f, -0.0320f, 0.1467f, -0.0265f, 0.0184f, 0.1467f, -0.0265f, 0.0020f, -0.1185f,
+    0.0265f, -0.0388f, -0.1185f, 0.0265f, -0.0381f, 0.0977f, 0.0265f, -0.0320f, 0.1467f,
+    0.0265f, 0.0184f, 0.1467f, 0.0265f, 0.0020f, -0.1185f, -0.0235f, 0.0020f, -0.1124f,
+    -0.0235f, 0.0020f, 0.0277f, -0.0235f, 0.0136f, 0.1270f, -0.0235f, 0.0347f, 0.1270f,
+    -0.0235f, 0.0360f, -0.0526f, -0.0235f, 0.0347f, -0.1008f, -0.0235f, 0.0088f, -0.1185f,
+    0.0235f, 0.0020f, -0.1124f, 0.0235f, 0.0020f, 0.0277f, 0.0235f, 0.0136f, 0.1270f,
+    0.0235f, 0.0347f, 0.1270f, 0.0235f, 0.0360f, -0.0526f, 0.0235f, 0.0347f, -0.1008f,
+    0.0235f, 0.0088f, -0.1185f, -0.0245f, 0.0054f, 0.1256f, -0.0245f, 0.0054f, 0.2072f,
+    -0.0245f, 0.0354f, 0.2072f, -0.0245f, 0.0381f, 0.1800f, -0.0245f, 0.0381f, 0.1256f,
+    0.0245f, 0.0054f, 0.1256f, 0.0245f, 0.0054f, 0.2072f, 0.0245f, 0.0354f, 0.2072f,
+    0.0245f, 0.0381f, 0.1800f, 0.0245f, 0.0381f, 0.1256f, -0.0061f, -0.0748f, 0.0080f,
+    -0.0061f, -0.0748f, 0.0141f, -0.0061f, -0.0374f, 0.0141f, -0.0061f, -0.0374f, 0.0080f,
+    0.0061f, -0.0748f, 0.0080f, 0.0061f, -0.0748f, 0.0141f, 0.0061f, -0.0374f, 0.0141f,
+    0.0061f, -0.0374f, 0.0080f, -0.0061f, -0.0748f, -0.0424f, -0.0061f, -0.0748f, 0.0141f,
+    -0.0061f, -0.0687f, 0.0141f, -0.0061f, -0.0687f, -0.0424f, 0.0061f, -0.0748f, -0.0424f,
+    0.0061f, -0.0748f, 0.0141f, 0.0061f, -0.0687f, 0.0141f, 0.0061f, -0.0687f, -0.0424f,
+    -0.0306f, 0.0054f, 0.1453f, -0.0306f, -0.0313f, 0.1460f, -0.0306f, -0.0401f, 0.1548f,
+    -0.0306f, -0.0326f, 0.2936f, -0.0306f, 0.0048f, 0.2949f, -0.0306f, 0.0061f, 0.1861f,
+    0.0306f, 0.0054f, 0.1453f, 0.0306f, -0.0313f, 0.1460f, 0.0306f, -0.0401f, 0.1548f,
+    0.0306f, -0.0326f, 0.2936f, 0.0306f, 0.0048f, 0.2949f, 0.0306f, 0.0061f, 0.1861f,
+    -0.0265f, 0.0048f, 0.1963f, -0.0265f, 0.0048f, 0.2942f, -0.0265f, 0.0340f, 0.2942f,
+    -0.0265f, 0.0340f, 0.1963f, 0.0265f, 0.0048f, 0.1963f, 0.0265f, 0.0048f, 0.2942f,
+    0.0265f, 0.0340f, 0.2942f, 0.0265f, 0.0340f, 0.1963f, 0.0133f, -0.0099f, 0.2942f,
+    0.0000f, -0.0048f, 0.2942f, -0.0133f, -0.0099f, 0.2942f, -0.0133f, -0.0201f, 0.2942f,
+    -0.0000f, -0.0252f, 0.2942f, 0.0133f, -0.0201f, 0.2942f, 0.0133f, -0.0099f, 0.5091f,
+    0.0000f, -0.0048f, 0.5091f, -0.0133f, -0.0099f, 0.5091f, -0.0133f, -0.0201f, 0.5091f,
+    -0.0000f, -0.0252f, 0.5091f, 0.0133f, -0.0201f, 0.5091f, -0.0112f, 0.0102f, 0.2942f,
+    -0.0112f, 0.0102f, 0.4044f, -0.0112f, 0.0272f, 0.4044f, -0.0112f, 0.0272f, 0.2942f,
+    0.0112f, 0.0102f, 0.2942f, 0.0112f, 0.0102f, 0.4044f, 0.0112f, 0.0272f, 0.4044f,
+    0.0112f, 0.0272f, 0.2942f, -0.0071f, -0.0102f, 0.4724f, -0.0071f, -0.0102f, 0.4996f,
+    -0.0071f, 0.0449f, 0.4942f, -0.0071f, 0.0449f, 0.4792f, 0.0071f, -0.0102f, 0.4724f,
+    0.0071f, -0.0102f, 0.4996f, 0.0071f, 0.0449f, 0.4942f, 0.0071f, 0.0449f, 0.4792f,
+    -0.0153f, -0.0292f, 0.4724f, -0.0153f, -0.0292f, 0.4996f, -0.0153f, -0.0034f, 0.4996f,
+    -0.0153f, -0.0034f, 0.4724f, 0.0153f, -0.0292f, 0.4724f, 0.0153f, -0.0292f, 0.4996f,
+    0.0153f, -0.0034f, 0.4996f, 0.0153f, -0.0034f, 0.4724f, -0.0173f, 0.0360f, 0.1528f,
+    -0.0173f, 0.0360f, 0.1766f, -0.0173f, 0.0456f, 0.1766f, -0.0173f, 0.0456f, 0.1528f,
+    0.0173f, 0.0360f, 0.1528f, 0.0173f, 0.0360f, 0.1766f, 0.0173f, 0.0456f, 0.1766f,
+    0.0173f, 0.0456f, 0.1528f, -0.0275f, -0.0401f, 0.0338f, -0.0275f, -0.0932f, 0.0433f,
+    -0.0275f, -0.1353f, 0.0658f, -0.0275f, -0.1761f, 0.1059f, -0.0275f, -0.2067f, 0.1562f,
+    -0.0275f, -0.1408f, 0.1827f, -0.0275f, -0.0374f, 0.1052f, -0.0275f, -0.0374f, 0.0392f,
+    0.0275f, -0.0401f, 0.0338f, 0.0275f, -0.0932f, 0.0433f, 0.0275f, -0.1353f, 0.0658f,
+    0.0275f, -0.1761f, 0.1059f, 0.0275f, -0.2067f, 0.1562f, 0.0275f, -0.1408f, 0.1827f,
+    0.0275f, -0.0374f, 0.1052f, 0.0275f, -0.0374f, 0.0392f,
+};
+static const unsigned char AKM_T[AKM_NT * 3] = {
+    0, 1, 2, 4, 6, 5, 0, 2, 3, 4, 7, 6, 0, 5, 1, 0, 4, 5, 1, 6, 2, 1, 5, 6,
+    2, 7, 3, 2, 6, 7, 3, 4, 0, 3, 7, 4, 8, 9, 10, 15, 17, 16, 8, 10, 11, 15, 18, 17,
+    8, 11, 12, 15, 19, 18, 8, 12, 13, 15, 20, 19, 8, 13, 14, 15, 21, 20, 8, 16, 9, 8, 15, 16,
+    9, 17, 10, 9, 16, 17, 10, 18, 11, 10, 17, 18, 11, 19, 12, 11, 18, 19, 12, 20, 13, 12, 19, 20,
+    13, 21, 14, 13, 20, 21, 14, 15, 8, 14, 21, 15, 22, 23, 24, 27, 29, 28, 22, 24, 25, 27, 30, 29,
+    22, 25, 26, 27, 31, 30, 22, 28, 23, 22, 27, 28, 23, 29, 24, 23, 28, 29, 24, 30, 25, 24, 29, 30,
+    25, 31, 26, 25, 30, 31, 26, 27, 22, 26, 31, 27, 32, 33, 34, 39, 41, 40, 32, 34, 35, 39, 42, 41,
+    32, 35, 36, 39, 43, 42, 32, 36, 37, 39, 44, 43, 32, 37, 38, 39, 45, 44, 32, 40, 33, 32, 39, 40,
+    33, 41, 34, 33, 40, 41, 34, 42, 35, 34, 41, 42, 35, 43, 36, 35, 42, 43, 36, 44, 37, 36, 43, 44,
+    37, 45, 38, 37, 44, 45, 38, 39, 32, 38, 45, 39, 46, 47, 48, 51, 53, 52, 46, 48, 49, 51, 54, 53,
+    46, 49, 50, 51, 55, 54, 46, 52, 47, 46, 51, 52, 47, 53, 48, 47, 52, 53, 48, 54, 49, 48, 53, 54,
+    49, 55, 50, 49, 54, 55, 50, 51, 46, 50, 55, 51, 56, 57, 58, 60, 62, 61, 56, 58, 59, 60, 63, 62,
+    56, 61, 57, 56, 60, 61, 57, 62, 58, 57, 61, 62, 58, 63, 59, 58, 62, 63, 59, 60, 56, 59, 63, 60,
+    64, 65, 66, 68, 70, 69, 64, 66, 67, 68, 71, 70, 64, 69, 65, 64, 68, 69, 65, 70, 66, 65, 69, 70,
+    66, 71, 67, 66, 70, 71, 67, 68, 64, 67, 71, 68, 72, 73, 74, 78, 80, 79, 72, 74, 75, 78, 81, 80,
+    72, 75, 76, 78, 82, 81, 72, 76, 77, 78, 83, 82, 72, 79, 73, 72, 78, 79, 73, 80, 74, 73, 79, 80,
+    74, 81, 75, 74, 80, 81, 75, 82, 76, 75, 81, 82, 76, 83, 77, 76, 82, 83, 77, 78, 72, 77, 83, 78,
+    84, 85, 86, 88, 90, 89, 84, 86, 87, 88, 91, 90, 84, 89, 85, 84, 88, 89, 85, 90, 86, 85, 89, 90,
+    86, 91, 87, 86, 90, 91, 87, 88, 84, 87, 91, 88, 92, 93, 99, 92, 99, 98, 93, 94, 100, 93, 100, 99,
+    94, 95, 101, 94, 101, 100, 95, 96, 102, 95, 102, 101, 96, 97, 103, 96, 103, 102, 97, 92, 98, 97, 98, 103,
+    98, 99, 100, 98, 100, 101, 98, 101, 102, 98, 102, 103, 104, 105, 106, 108, 110, 109, 104, 106, 107, 108, 111, 110,
+    104, 109, 105, 104, 108, 109, 105, 110, 106, 105, 109, 110, 106, 111, 107, 106, 110, 111, 107, 108, 104, 107, 111, 108,
+    112, 113, 114, 116, 118, 117, 112, 114, 115, 116, 119, 118, 112, 117, 113, 112, 116, 117, 113, 118, 114, 113, 117, 118,
+    114, 119, 115, 114, 118, 119, 115, 116, 112, 115, 119, 116, 120, 121, 122, 124, 126, 125, 120, 122, 123, 124, 127, 126,
+    120, 125, 121, 120, 124, 125, 121, 126, 122, 121, 125, 126, 122, 127, 123, 122, 126, 127, 123, 124, 120, 123, 127, 124,
+    128, 129, 130, 132, 134, 133, 128, 130, 131, 132, 135, 134, 128, 133, 129, 128, 132, 133, 129, 134, 130, 129, 133, 134,
+    130, 135, 131, 130, 134, 135, 131, 132, 128, 131, 135, 132, 136, 137, 138, 144, 146, 145, 136, 138, 139, 144, 147, 146,
+    136, 139, 140, 144, 148, 147, 136, 140, 141, 144, 149, 148, 136, 141, 142, 144, 150, 149, 136, 142, 143, 144, 151, 150,
+    136, 145, 137, 136, 144, 145, 137, 146, 138, 137, 145, 146, 138, 147, 139, 138, 146, 147, 139, 148, 140, 139, 147, 148,
+    140, 149, 141, 140, 148, 149, 141, 150, 142, 141, 149, 150, 142, 151, 143, 142, 150, 151, 143, 144, 136, 143, 151, 144,
+};
+static const unsigned char AKM_C[AKM_NT] = {
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 6, 6, 6,
+    6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+};
+#define AKL_NV 160
+#define AKL_NT 256
+static const float AKL_V[AKL_NV * 3] = {
+    -0.0265f, -0.0891f, -0.3633f, -0.0265f, -0.0993f, -0.3558f, -0.0265f, -0.0646f, -0.1994f,
+    -0.0265f, -0.0381f, -0.1178f, -0.0265f, 0.0020f, -0.1178f, -0.0265f, 0.0061f, -0.1988f,
+    -0.0265f, 0.0075f, -0.3565f, -0.0265f, 0.0000f, -0.3613f, 0.0265f, -0.0891f, -0.3633f,
+    0.0265f, -0.0993f, -0.3558f, 0.0265f, -0.0646f, -0.1994f, 0.0265f, -0.0381f, -0.1178f,
+    0.0265f, 0.0020f, -0.1178f, 0.0265f, 0.0061f, -0.1988f, 0.0265f, 0.0075f, -0.3565f,
+    0.0265f, 0.0000f, -0.3613f, -0.0296f, -0.1238f, -0.1206f, -0.0296f, -0.1353f, -0.1083f,
+    -0.0296f, -0.1462f, -0.0832f, -0.0296f, -0.1387f, -0.0736f, -0.0296f, -0.0564f, -0.0403f,
+    -0.0296f, -0.0381f, -0.0342f, -0.0296f, -0.0381f, -0.0988f, 0.0296f, -0.1238f, -0.1206f,
+    0.0296f, -0.1353f, -0.1083f, 0.0296f, -0.1462f, -0.0832f, 0.0296f, -0.1387f, -0.0736f,
+    0.0296f, -0.0564f, -0.0403f, 0.0296f, -0.0381f, -0.0342f, 0.0296f, -0.0381f, -0.0988f,
+    -0.0265f, -0.0388f, -0.1185f, -0.0265f, -0.0381f, 0.0977f, -0.0265f, -0.0320f, 0.1467f,
+    -0.0265f, 0.0184f, 0.1467f, -0.0265f, 0.0020f, -0.1185f, 0.0265f, -0.0388f, -0.1185f,
+    0.0265f, -0.0381f, 0.0977f, 0.0265f, -0.0320f, 0.1467f, 0.0265f, 0.0184f, 0.1467f,
+    0.0265f, 0.0020f, -0.1185f, -0.0235f, 0.0020f, -0.1124f, -0.0235f, 0.0020f, 0.0277f,
+    -0.0235f, 0.0136f, 0.1270f, -0.0235f, 0.0347f, 0.1270f, -0.0235f, 0.0360f, -0.0526f,
+    -0.0235f, 0.0347f, -0.1008f, -0.0235f, 0.0088f, -0.1185f, 0.0235f, 0.0020f, -0.1124f,
+    0.0235f, 0.0020f, 0.0277f, 0.0235f, 0.0136f, 0.1270f, 0.0235f, 0.0347f, 0.1270f,
+    0.0235f, 0.0360f, -0.0526f, 0.0235f, 0.0347f, -0.1008f, 0.0235f, 0.0088f, -0.1185f,
+    -0.0245f, 0.0054f, 0.1256f, -0.0245f, 0.0054f, 0.2072f, -0.0245f, 0.0354f, 0.2072f,
+    -0.0245f, 0.0381f, 0.1800f, -0.0245f, 0.0381f, 0.1256f, 0.0245f, 0.0054f, 0.1256f,
+    0.0245f, 0.0054f, 0.2072f, 0.0245f, 0.0354f, 0.2072f, 0.0245f, 0.0381f, 0.1800f,
+    0.0245f, 0.0381f, 0.1256f, -0.0061f, -0.0748f, 0.0080f, -0.0061f, -0.0748f, 0.0141f,
+    -0.0061f, -0.0374f, 0.0141f, -0.0061f, -0.0374f, 0.0080f, 0.0061f, -0.0748f, 0.0080f,
+    0.0061f, -0.0748f, 0.0141f, 0.0061f, -0.0374f, 0.0141f, 0.0061f, -0.0374f, 0.0080f,
+    -0.0061f, -0.0748f, -0.0424f, -0.0061f, -0.0748f, 0.0141f, -0.0061f, -0.0687f, 0.0141f,
+    -0.0061f, -0.0687f, -0.0424f, 0.0061f, -0.0748f, -0.0424f, 0.0061f, -0.0748f, 0.0141f,
+    0.0061f, -0.0687f, 0.0141f, 0.0061f, -0.0687f, -0.0424f, -0.0306f, 0.0054f, 0.1453f,
+    -0.0306f, -0.0313f, 0.1460f, -0.0306f, -0.0401f, 0.1548f, -0.0306f, -0.0326f, 0.2936f,
+    -0.0306f, 0.0048f, 0.2949f, -0.0306f, 0.0061f, 0.1861f, 0.0306f, 0.0054f, 0.1453f,
+    0.0306f, -0.0313f, 0.1460f, 0.0306f, -0.0401f, 0.1548f, 0.0306f, -0.0326f, 0.2936f,
+    0.0306f, 0.0048f, 0.2949f, 0.0306f, 0.0061f, 0.1861f, -0.0265f, 0.0048f, 0.1963f,
+    -0.0265f, 0.0048f, 0.2942f, -0.0265f, 0.0340f, 0.2942f, -0.0265f, 0.0340f, 0.1963f,
+    0.0265f, 0.0048f, 0.1963f, 0.0265f, 0.0048f, 0.2942f, 0.0265f, 0.0340f, 0.2942f,
+    0.0265f, 0.0340f, 0.1963f, 0.0133f, -0.0099f, 0.2942f, 0.0000f, -0.0048f, 0.2942f,
+    -0.0133f, -0.0099f, 0.2942f, -0.0133f, -0.0201f, 0.2942f, -0.0000f, -0.0252f, 0.2942f,
+    0.0133f, -0.0201f, 0.2942f, 0.0133f, -0.0099f, 0.5091f, 0.0000f, -0.0048f, 0.5091f,
+    -0.0133f, -0.0099f, 0.5091f, -0.0133f, -0.0201f, 0.5091f, -0.0000f, -0.0252f, 0.5091f,
+    0.0133f, -0.0201f, 0.5091f, -0.0112f, 0.0102f, 0.2942f, -0.0112f, 0.0102f, 0.4044f,
+    -0.0112f, 0.0272f, 0.4044f, -0.0112f, 0.0272f, 0.2942f, 0.0112f, 0.0102f, 0.2942f,
+    0.0112f, 0.0102f, 0.4044f, 0.0112f, 0.0272f, 0.4044f, 0.0112f, 0.0272f, 0.2942f,
+    -0.0071f, -0.0102f, 0.4724f, -0.0071f, -0.0102f, 0.4996f, -0.0071f, 0.0449f, 0.4942f,
+    -0.0071f, 0.0449f, 0.4792f, 0.0071f, -0.0102f, 0.4724f, 0.0071f, -0.0102f, 0.4996f,
+    0.0071f, 0.0449f, 0.4942f, 0.0071f, 0.0449f, 0.4792f, -0.0153f, -0.0292f, 0.4724f,
+    -0.0153f, -0.0292f, 0.4996f, -0.0153f, -0.0034f, 0.4996f, -0.0153f, -0.0034f, 0.4724f,
+    0.0153f, -0.0292f, 0.4724f, 0.0153f, -0.0292f, 0.4996f, 0.0153f, -0.0034f, 0.4996f,
+    0.0153f, -0.0034f, 0.4724f, -0.0173f, 0.0360f, 0.1528f, -0.0173f, 0.0360f, 0.1766f,
+    -0.0173f, 0.0456f, 0.1766f, -0.0173f, 0.0456f, 0.1528f, 0.0173f, 0.0360f, 0.1528f,
+    0.0173f, 0.0360f, 0.1766f, 0.0173f, 0.0456f, 0.1766f, 0.0173f, 0.0456f, 0.1528f,
+    -0.0275f, -0.0401f, 0.0338f, -0.0275f, -0.0932f, 0.0433f, -0.0275f, -0.1353f, 0.0658f,
+    -0.0275f, -0.1761f, 0.1059f, -0.0275f, -0.2067f, 0.1562f, -0.0275f, -0.1408f, 0.1827f,
+    -0.0275f, -0.0374f, 0.1052f, -0.0275f, -0.0374f, 0.0392f, 0.0275f, -0.0401f, 0.0338f,
+    0.0275f, -0.0932f, 0.0433f, 0.0275f, -0.1353f, 0.0658f, 0.0275f, -0.1761f, 0.1059f,
+    0.0275f, -0.2067f, 0.1562f, 0.0275f, -0.1408f, 0.1827f, 0.0275f, -0.0374f, 0.1052f,
+    0.0275f, -0.0374f, 0.0392f,
+};
+static const unsigned char AKL_T[AKL_NT * 3] = {
+    0, 1, 2, 8, 10, 9, 0, 2, 3, 8, 11, 10, 0, 3, 4, 8, 12, 11, 0, 4, 5, 8, 13, 12,
+    0, 5, 6, 8, 14, 13, 0, 6, 7, 8, 15, 14, 0, 9, 1, 0, 8, 9, 1, 10, 2, 1, 9, 10,
+    2, 11, 3, 2, 10, 11, 3, 12, 4, 3, 11, 12, 4, 13, 5, 4, 12, 13, 5, 14, 6, 5, 13, 14,
+    6, 15, 7, 6, 14, 15, 7, 8, 0, 7, 15, 8, 16, 17, 18, 23, 25, 24, 16, 18, 19, 23, 26, 25,
+    16, 19, 20, 23, 27, 26, 16, 20, 21, 23, 28, 27, 16, 21, 22, 23, 29, 28, 16, 24, 17, 16, 23, 24,
+    17, 25, 18, 17, 24, 25, 18, 26, 19, 18, 25, 26, 19, 27, 20, 19, 26, 27, 20, 28, 21, 20, 27, 28,
+    21, 29, 22, 21, 28, 29, 22, 23, 16, 22, 29, 23, 30, 31, 32, 35, 37, 36, 30, 32, 33, 35, 38, 37,
+    30, 33, 34, 35, 39, 38, 30, 36, 31, 30, 35, 36, 31, 37, 32, 31, 36, 37, 32, 38, 33, 32, 37, 38,
+    33, 39, 34, 33, 38, 39, 34, 35, 30, 34, 39, 35, 40, 41, 42, 47, 49, 48, 40, 42, 43, 47, 50, 49,
+    40, 43, 44, 47, 51, 50, 40, 44, 45, 47, 52, 51, 40, 45, 46, 47, 53, 52, 40, 48, 41, 40, 47, 48,
+    41, 49, 42, 41, 48, 49, 42, 50, 43, 42, 49, 50, 43, 51, 44, 43, 50, 51, 44, 52, 45, 44, 51, 52,
+    45, 53, 46, 45, 52, 53, 46, 47, 40, 46, 53, 47, 54, 55, 56, 59, 61, 60, 54, 56, 57, 59, 62, 61,
+    54, 57, 58, 59, 63, 62, 54, 60, 55, 54, 59, 60, 55, 61, 56, 55, 60, 61, 56, 62, 57, 56, 61, 62,
+    57, 63, 58, 57, 62, 63, 58, 59, 54, 58, 63, 59, 64, 65, 66, 68, 70, 69, 64, 66, 67, 68, 71, 70,
+    64, 69, 65, 64, 68, 69, 65, 70, 66, 65, 69, 70, 66, 71, 67, 66, 70, 71, 67, 68, 64, 67, 71, 68,
+    72, 73, 74, 76, 78, 77, 72, 74, 75, 76, 79, 78, 72, 77, 73, 72, 76, 77, 73, 78, 74, 73, 77, 78,
+    74, 79, 75, 74, 78, 79, 75, 76, 72, 75, 79, 76, 80, 81, 82, 86, 88, 87, 80, 82, 83, 86, 89, 88,
+    80, 83, 84, 86, 90, 89, 80, 84, 85, 86, 91, 90, 80, 87, 81, 80, 86, 87, 81, 88, 82, 81, 87, 88,
+    82, 89, 83, 82, 88, 89, 83, 90, 84, 83, 89, 90, 84, 91, 85, 84, 90, 91, 85, 86, 80, 85, 91, 86,
+    92, 93, 94, 96, 98, 97, 92, 94, 95, 96, 99, 98, 92, 97, 93, 92, 96, 97, 93, 98, 94, 93, 97, 98,
+    94, 99, 95, 94, 98, 99, 95, 96, 92, 95, 99, 96, 100, 101, 107, 100, 107, 106, 101, 102, 108, 101, 108, 107,
+    102, 103, 109, 102, 109, 108, 103, 104, 110, 103, 110, 109, 104, 105, 111, 104, 111, 110, 105, 100, 106, 105, 106, 111,
+    106, 107, 108, 106, 108, 109, 106, 109, 110, 106, 110, 111, 112, 113, 114, 116, 118, 117, 112, 114, 115, 116, 119, 118,
+    112, 117, 113, 112, 116, 117, 113, 118, 114, 113, 117, 118, 114, 119, 115, 114, 118, 119, 115, 116, 112, 115, 119, 116,
+    120, 121, 122, 124, 126, 125, 120, 122, 123, 124, 127, 126, 120, 125, 121, 120, 124, 125, 121, 126, 122, 121, 125, 126,
+    122, 127, 123, 122, 126, 127, 123, 124, 120, 123, 127, 124, 128, 129, 130, 132, 134, 133, 128, 130, 131, 132, 135, 134,
+    128, 133, 129, 128, 132, 133, 129, 134, 130, 129, 133, 134, 130, 135, 131, 130, 134, 135, 131, 132, 128, 131, 135, 132,
+    136, 137, 138, 140, 142, 141, 136, 138, 139, 140, 143, 142, 136, 141, 137, 136, 140, 141, 137, 142, 138, 137, 141, 142,
+    138, 143, 139, 138, 142, 143, 139, 140, 136, 139, 143, 140, 144, 145, 146, 152, 154, 153, 144, 146, 147, 152, 155, 154,
+    144, 147, 148, 152, 156, 155, 144, 148, 149, 152, 157, 156, 144, 149, 150, 152, 158, 157, 144, 150, 151, 152, 159, 158,
+    144, 153, 145, 144, 152, 153, 145, 154, 146, 145, 153, 154, 146, 155, 147, 146, 154, 155, 147, 156, 148, 147, 155, 156,
+    148, 157, 149, 148, 156, 157, 149, 158, 150, 149, 157, 158, 150, 159, 151, 150, 158, 159, 151, 152, 144, 151, 159, 152,
+};
+static const unsigned char AKL_C[AKL_NT] = {
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+    6, 6, 6, 6, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+    6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 6, 6, 6, 6, 6, 6, 6,
+    6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+};
+#define AKB_NV 70
+#define AKB_NT 112
+static const float AKB_V[AKB_NV * 3] = {
+    -0.0265f, -0.0993f, -0.3558f, -0.0265f, -0.0646f, -0.1994f, -0.0265f, -0.0381f, -0.1178f,
+    -0.0265f, 0.0020f, -0.1178f, -0.0265f, 0.0075f, -0.3565f, 0.0265f, -0.0993f, -0.3558f,
+    0.0265f, -0.0646f, -0.1994f, 0.0265f, -0.0381f, -0.1178f, 0.0265f, 0.0020f, -0.1178f,
+    0.0265f, 0.0075f, -0.3565f, -0.0296f, -0.1238f, -0.1206f, -0.0296f, -0.1462f, -0.0832f,
+    -0.0296f, -0.1387f, -0.0736f, -0.0296f, -0.0381f, -0.0342f, -0.0296f, -0.0381f, -0.0988f,
+    0.0296f, -0.1238f, -0.1206f, 0.0296f, -0.1462f, -0.0832f, 0.0296f, -0.1387f, -0.0736f,
+    0.0296f, -0.0381f, -0.0342f, 0.0296f, -0.0381f, -0.0988f, -0.0265f, -0.0388f, -0.1185f,
+    -0.0265f, -0.0381f, 0.0977f, -0.0265f, -0.0320f, 0.1467f, -0.0265f, 0.0184f, 0.1467f,
+    -0.0265f, 0.0347f, 0.1270f, -0.0265f, 0.0360f, -0.0526f, -0.0265f, 0.0102f, -0.1124f,
+    0.0265f, -0.0388f, -0.1185f, 0.0265f, -0.0381f, 0.0977f, 0.0265f, -0.0320f, 0.1467f,
+    0.0265f, 0.0184f, 0.1467f, 0.0265f, 0.0347f, 0.1270f, 0.0265f, 0.0360f, -0.0526f,
+    0.0265f, 0.0102f, -0.1124f, -0.0275f, -0.0401f, 0.0338f, -0.0275f, -0.0932f, 0.0433f,
+    -0.0275f, -0.1761f, 0.1059f, -0.0275f, -0.2067f, 0.1562f, -0.0275f, -0.1408f, 0.1827f,
+    -0.0275f, -0.0374f, 0.1052f, 0.0275f, -0.0401f, 0.0338f, 0.0275f, -0.0932f, 0.0433f,
+    0.0275f, -0.1761f, 0.1059f, 0.0275f, -0.2067f, 0.1562f, 0.0275f, -0.1408f, 0.1827f,
+    0.0275f, -0.0374f, 0.1052f, -0.0286f, -0.0374f, 0.1460f, -0.0286f, -0.0326f, 0.2942f,
+    -0.0286f, 0.0340f, 0.2942f, -0.0286f, 0.0340f, 0.1460f, 0.0286f, -0.0374f, 0.1460f,
+    0.0286f, -0.0326f, 0.2942f, 0.0286f, 0.0340f, 0.2942f, 0.0286f, 0.0340f, 0.1460f,
+    -0.0102f, -0.0238f, 0.2942f, -0.0102f, -0.0238f, 0.5091f, -0.0102f, -0.0068f, 0.5091f,
+    -0.0102f, -0.0068f, 0.2942f, 0.0102f, -0.0238f, 0.2942f, 0.0102f, -0.0238f, 0.5091f,
+    0.0102f, -0.0068f, 0.5091f, 0.0102f, -0.0068f, 0.2942f, -0.0071f, -0.0102f, 0.4724f,
+    -0.0071f, -0.0102f, 0.4996f, -0.0071f, 0.0449f, 0.4942f, -0.0071f, 0.0449f, 0.4792f,
+    0.0071f, -0.0102f, 0.4724f, 0.0071f, -0.0102f, 0.4996f, 0.0071f, 0.0449f, 0.4942f,
+    0.0071f, 0.0449f, 0.4792f,
+};
+static const unsigned char AKB_T[AKB_NT * 3] = {
+    0, 1, 2, 5, 7, 6, 0, 2, 3, 5, 8, 7, 0, 3, 4, 5, 9, 8, 0, 6, 1, 0, 5, 6,
+    1, 7, 2, 1, 6, 7, 2, 8, 3, 2, 7, 8, 3, 9, 4, 3, 8, 9, 4, 5, 0, 4, 9, 5,
+    10, 11, 12, 15, 17, 16, 10, 12, 13, 15, 18, 17, 10, 13, 14, 15, 19, 18, 10, 16, 11, 10, 15, 16,
+    11, 17, 12, 11, 16, 17, 12, 18, 13, 12, 17, 18, 13, 19, 14, 13, 18, 19, 14, 15, 10, 14, 19, 15,
+    20, 21, 22, 27, 29, 28, 20, 22, 23, 27, 30, 29, 20, 23, 24, 27, 31, 30, 20, 24, 25, 27, 32, 31,
+    20, 25, 26, 27, 33, 32, 20, 28, 21, 20, 27, 28, 21, 29, 22, 21, 28, 29, 22, 30, 23, 22, 29, 30,
+    23, 31, 24, 23, 30, 31, 24, 32, 25, 24, 31, 32, 25, 33, 26, 25, 32, 33, 26, 27, 20, 26, 33, 27,
+    34, 35, 36, 40, 42, 41, 34, 36, 37, 40, 43, 42, 34, 37, 38, 40, 44, 43, 34, 38, 39, 40, 45, 44,
+    34, 41, 35, 34, 40, 41, 35, 42, 36, 35, 41, 42, 36, 43, 37, 36, 42, 43, 37, 44, 38, 37, 43, 44,
+    38, 45, 39, 38, 44, 45, 39, 40, 34, 39, 45, 40, 46, 47, 48, 50, 52, 51, 46, 48, 49, 50, 53, 52,
+    46, 51, 47, 46, 50, 51, 47, 52, 48, 47, 51, 52, 48, 53, 49, 48, 52, 53, 49, 50, 46, 49, 53, 50,
+    54, 55, 56, 58, 60, 59, 54, 56, 57, 58, 61, 60, 54, 59, 55, 54, 58, 59, 55, 60, 56, 55, 59, 60,
+    56, 61, 57, 56, 60, 61, 57, 58, 54, 57, 61, 58, 62, 63, 64, 66, 68, 67, 62, 64, 65, 66, 69, 68,
+    62, 67, 63, 62, 66, 67, 63, 68, 64, 63, 67, 68, 64, 69, 65, 64, 68, 69, 65, 66, 62, 65, 69, 66,
+};
+static const unsigned char AKB_C[AKB_NT] = {
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 7, 7, 7, 7, 7, 7, 7,
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+};
 /* soldado con escopeta (tercera persona): igual que vpDrawRig; el punto de agarre de la culata cae sobre la mano del hueso BN_WEAP */
-static void sgDrawMesh(const M34 *wm, const float *MV, const unsigned char *MT, const unsigned char *MC, int nv, int nt) {
-    float tv[SGL_NV][3];
+static void sgDrawMesh(const M34 *wm, const float *MV, const unsigned char *MT, const unsigned char *MC, int nv, int nt, float gy, float gz, const u32c *pal) {
+    float tv[AKL_NV > SGL_NV ? AKL_NV : SGL_NV][3];
     for (int i = 0; i < nv; i++) {
-        float lp[3] = { 0.17f - MV[i * 3], 1.12f + (MV[i * 3 + 1] - SG_GY), -0.38f - (MV[i * 3 + 2] - SG_GZ) };
+        float lp[3] = { 0.17f - MV[i * 3], 1.12f + (MV[i * 3 + 1] - gy), -0.38f - (MV[i * 3 + 2] - gz) };
         m34Xf(wm, lp, tv[i]);
     }
     const float *m = wm->m;
@@ -9804,12 +10070,14 @@ static void sgDrawMesh(const M34 *wm, const float *MV, const unsigned char *MT, 
         nl = sg / sqrtf(nl); nx *= nl; ny *= nl; nz *= nl;
         float dist = sqrtf(ex * ex + ey * ey + ez * ez), shade = clampf(0.62f + 0.38f * (nx * -0.35f + ny * 0.8f + nz * 0.45f), 0.45f, 1.05f);
         V v[3]; const float *pp[3] = { a, b, c };
-        for (int k = 0; k < 3; k++) { toView(pp[k][0], pp[k][1], pp[k][2], &v[k].x, &v[k].y, &v[k].z); fogColor(SG_PAL[MC[t]], shade, dist, &v[k].r, &v[k].g, &v[k].b); }
+        for (int k = 0; k < 3; k++) { toView(pp[k][0], pp[k][1], pp[k][2], &v[k].x, &v[k].y, &v[k].z); fogColor(pal[MC[t]], shade, dist, &v[k].r, &v[k].g, &v[k].b); }
         emitPoly(v, 3, 0);
     }
 }
-static void sgDrawRig(const M34 *wm) { sgDrawMesh(wm, SGL_V, SGL_T, SGL_C, SGL_NV, SGL_NT); }       /* personaje del jugador: 181 triangulos */
-static void sgDrawRigLo(const M34 *wm) { sgDrawMesh(wm, SGB_V, SGB_T, SGB_C, SGB_NV, SGB_NT); }     /* soldados: 77 triangulos */
+static void sgDrawRig(const M34 *wm) { sgDrawMesh(wm, SGL_V, SGL_T, SGL_C, SGL_NV, SGL_NT, SG_GY, SG_GZ, SG_PAL); }       /* personaje del jugador: 181 triangulos */
+static void sgDrawRigLo(const M34 *wm) { sgDrawMesh(wm, SGB_V, SGB_T, SGB_C, SGB_NV, SGB_NT, SG_GY, SG_GZ, SG_PAL); }
+static void akDrawRig(const M34 *wm) { sgDrawMesh(wm, AKL_V, AKL_T, AKL_C, AKL_NV, AKL_NT, AK_GY, AK_GZ, AK_PAL); }      /* AK-47 del personaje del jugador: 256 triangulos */
+static void akDrawRigLo(const M34 *wm) { sgDrawMesh(wm, AKB_V, AKB_T, AKB_C, AKB_NV, AKB_NT, AK_GY, AK_GZ, AK_PAL); }      /* AK-47 de los soldados: 112 triangulos */     /* soldados: 77 triangulos */
 static int rigBotLod;      /* 1 mientras se dibuja un soldado (no el personaje del jugador): sus armas llevan menos detalle y solo se detallan de cerca */
 #define BOT_WEAP_NEAR 10.0f      /* hasta esta distancia (m) el soldado lleva la malla de su arma; mas lejos, el arma de su modelo (sin triangulos extra) */
 /* cajas rigidas en el espacio del hueso del arma (x0, x1, y0, y1, z0, z1, tipo): complementos baratos, p. ej. el cargador de la ametralladora */
@@ -9884,7 +10152,7 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
     }
     for (int f = 0; f < m->nf; f++) {
         int part = m->p[f];
-        if (part == 5 && (weap == 0 || (weap == 2 && sgNear))) continue;       /* arma del modelo: se sustituye por la pistola VP70 o la escopeta M37 */
+        if (part == 5 && (weap == 0 || ((weap == 1 || weap == 2) && sgNear))) continue;       /* arma del modelo: se sustituye por la pistola VP70 o la escopeta M37 */
         const unsigned short *qd = &m->f[f * 4];
         if (fast) {
             if (farLod && m->fl[f]) continue;
@@ -9922,6 +10190,7 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
         }
         emitPoly(v, 4, 0);
     }
+    if (weap == 1 && sgNear) { if (rigBotLod) akDrawRigLo(&G[BN_WEAP]); else akDrawRig(&G[BN_WEAP]); }       /* AK-47 sujeta por el hueso del arma */
     if (weap == 2 && sgNear) { if (rigBotLod) sgDrawRigLo(&G[BN_WEAP]); else sgDrawRig(&G[BN_WEAP]); }       /* escopeta M37 sujeta por el hueso del arma */
     if (weap == 3 && sgNear) {      /* ametralladora de cerca: cargador de caja y caja de municion sobre el arma del modelo (12 triangulos) */
         static const float mgb[2][7] = { { 0.150f, 0.190f, 0.930f, 1.080f, -0.640f, -0.480f, 1 }, { 0.146f, 0.194f, 1.130f, 1.165f, -0.560f, -0.440f, 1 } };
@@ -9956,7 +10225,7 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
         }
     }
     if (flash > 0 && !g->dead) {
-        float lp[3] = { 0.17f, 1.14f, (weap == 0 ? -0.62f : (weap == 2 && sgNear ? -1.15f : -1.08f)) - 0.07f }, wp[3]; m34Xf(&G[BN_WEAP], lp, wp);
+        float lp[3] = { 0.17f, 1.14f, (weap == 0 ? -0.62f : (weap == 2 && sgNear ? -1.15f : (weap == 1 && sgNear ? -0.97f : -1.08f))) - 0.07f }, wp[3]; m34Xf(&G[BN_WEAP], lp, wp);
         obox(wp[0], wp[1], wp[2], .07f, .07f, .09f, yaw, RGBA(255, 214, 110, 255));
     }
 }
@@ -9986,7 +10255,8 @@ static void updateRigs(float dt) {
             }
         }
         if (b->rl) { b->rlT += dt; if (b->rlT > 1.7f) b->rl = 0; }
-        RigIn in = { vx, vz, b->yaw, pitch, b->rl ? clampf(b->rlT / 1.7f, 0, 1) : -1.0f, b->crWant, aim, b->fireEv, b->alive, mapF <= 0 && b->py > 0.12f };
+        if (!b->remote && b->state != BS_PEEK) b->prone = 0;      /* solo se acuestan al asomar desde la cobertura; al cambiar de estado se levantan */
+        RigIn in = { vx, vz, b->yaw, pitch, b->rl ? clampf(b->rlT / 1.7f, 0, 1) : -1.0f, b->crWant, aim, b->fireEv, b->alive, mapF <= 0 && b->py > 0.12f, b->prone };
         b->fireEv = 0;
         rigUpdate(&b->rg, &in, dt);
         b->cr = b->rg.crouch; b->pitch = pitch;
@@ -10043,7 +10313,7 @@ static float charAnim(const Pad *pd, float dt) {
 #endif
     anFall = P.alive ? 0 : fminf(1.0f, anFall + dt * 2.2f);
     float ru = wReload > 0 ? clampf(1 - wReload / W[wsel].reload, 0, 1) : -1.0f;
-    RigIn in = { P.vx, P.vz, P.yaw, P.pitch, ru, P.crWant != 0, anAim > 0.4f, pFired, P.alive, !P.ground };
+    RigIn in = { P.vx, P.vz, P.yaw, P.pitch, ru, P.crWant != 0, anAim > 0.4f, pFired, P.alive, !P.ground, P.prone != 0 };
     pFired = 0;
     rigUpdate(&pRig, &in, dt);
     return spd;
@@ -10145,9 +10415,9 @@ static const VMDef VMD[4] = {
     /* 0 pistola */   { { 0, -0.055f, -0.035f }, { 0.10f, -0.17f, 0.40f }, { 0.38f, -0.15f, -0.35f },
         { { 0.00f, -0.035f, -0.06f, -0.03f }, { 0.16f, -0.02f, -0.15f, -0.04f }, { 0.30f, -0.02f, -0.15f, -0.04f }, { 0.40f, -0.02f, -0.30f, -0.04f }, { 0.50f, -0.22f, -0.42f, 0.00f },
           { 0.60f, -0.14f, -0.30f, -0.02f }, { 0.70f, -0.02f, -0.18f, -0.04f }, { 0.76f, -0.02f, -0.15f, -0.04f }, { 0.86f, -0.05f, 0.05f, 0.00f }, { 1.00f, -0.035f, -0.06f, -0.03f } }, 0.24f },
-    /* 1 fusil */     { { 0, -0.085f, -0.075f }, { 0.21f, -0.24f, 0.47f }, { 0.42f, -0.30f, -0.62f },
-        { { 0.00f, -0.01f, -0.045f, 0.33f }, { 0.16f, -0.01f, -0.10f, 0.05f }, { 0.30f, -0.01f, -0.10f, 0.05f }, { 0.40f, -0.02f, -0.26f, 0.04f }, { 0.50f, -0.20f, -0.40f, 0.00f },
-          { 0.60f, -0.14f, -0.30f, 0.03f }, { 0.70f, -0.02f, -0.15f, 0.05f }, { 0.76f, -0.01f, -0.10f, 0.05f }, { 0.86f, -0.05f, 0.00f, -0.01f }, { 1.00f, -0.01f, -0.045f, 0.33f } }, 0.70f },
+    /* 1 AK-47 */     { { 0, AK_GY, AK_GZ }, { 0.21f, -0.24f, 0.47f }, { 0.42f, -0.30f, -0.62f },
+        { { 0.00f, -0.01f, -0.060f, 0.23f }, { 0.16f, -0.01f, -0.10f, 0.08f }, { 0.30f, -0.01f, -0.10f, 0.08f }, { 0.40f, -0.02f, -0.26f, 0.06f }, { 0.50f, -0.20f, -0.40f, 0.00f },
+          { 0.60f, -0.14f, -0.30f, 0.05f }, { 0.70f, -0.02f, -0.15f, 0.08f }, { 0.76f, -0.01f, -0.10f, 0.08f }, { 0.86f, -0.05f, 0.00f, 0.00f }, { 1.00f, -0.01f, -0.060f, 0.23f } }, 0.51f },
     /* 2 escopeta M37: agarre en la muneca de la culata (SG_GY, SG_GZ); la mano de apoyo sube a la bomba y al puerto de carga de la nueva malla */
     /* 2 escopeta */  { { 0, SG_GY, SG_GZ }, { 0.20f, -0.185f, 0.44f }, { 0.35f, -0.20f, 0.55f },
         { { 0.00f, 0.0f, -0.007f, 0.33f }, { 0.12f, -0.18f, -0.35f, 0.05f }, { 0.24f, 0.0f, -0.04f, 0.02f }, { 0.34f, -0.18f, -0.35f, 0.05f }, { 0.46f, 0.0f, -0.04f, 0.02f },
@@ -10212,6 +10482,24 @@ static void sgDrawVM(float pdz) {
         }
     }
 }
+/* AK-47 en primera persona: culata recortada, cargador al final (withMag = 0 mientras se cambia) */
+static void akDrawVM(int withMag) {
+    float pv[AKM_NV][3];
+    for (int i = 0; i < AKM_NV; i++) wpt(AKM_V[i * 3], AKM_V[i * 3 + 1], AKM_V[i * 3 + 2], pv[i]);
+    int nt = withMag ? AKM_NT : AKM_NTB;
+    for (int t = 0; t < nt; t++) {
+        const float *a = pv[AKM_T[t * 3]], *b = pv[AKM_T[t * 3 + 1]], *c = pv[AKM_T[t * 3 + 2]];
+        float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+        float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, nl = nx * nx + ny * ny + nz * nz;
+        if (nl < 1e-24f) continue;
+        if (nx * a[0] + ny * a[1] + nz * a[2] >= 0) continue;                    /* de espaldas a la camara (esta en el origen): fuera, sin normalizar */
+        nl = 1.0f / sqrtf(nl); nx *= nl; ny *= nl; nz *= nl;
+        float shade = clampf(0.7f + 0.3f * (ny * 0.8f - nx * 0.35f), 0.45f, 1.0f);
+        u32c col = AK_PAL[AKM_C[t]]; V v[3]; const float *pp[3] = { a, b, c };
+        for (int k = 0; k < 3; k++) { v[k].x = pp[k][0]; v[k].y = pp[k][1]; v[k].z = pp[k][2]; v[k].r = CR(col) * shade; v[k].g = CG(col) * shade; v[k].b = CB(col) * shade; }
+        emitPoly(v, 3, 1);
+    }
+}
 static void handR(float gx, float gy, float gz, const float *anchor, int glove) {   /* mano derecha en la empunadura (glove=0: solo antebrazo, sin cajas de guante) */
     u32c GLV = RGBA(52, 54, 58, 255), KNU = RGBA(92, 94, 100, 255), SL = RGBA(176, 152, 110, 255), SP = RGBA(142, 120, 84, 255);
     if (!glove) { float a0[3]; wpt(gx + 0.045f, gy - 0.012f, gz - 0.030f, a0); limb(anchor, a0, 0.036f, SL, SP); return; }
@@ -10256,7 +10544,7 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
     float pitch = d->tilt[0] * k + kick * 0.7f, yaw = d->tilt[1] * k + 0.05f - swap * 0.4f, roll = d->tilt[2] * k - swap * 0.5f;
 #ifdef PS2_ONLINE
     /* apuntando: el arma pasa al centro y la mira queda a la altura del ojo; corriendo: arma baja y ladeada */
-    static const float ADSP[4][3] = { { 0, -0.134f, 0.46f }, { 0, -0.200f, 0.50f }, { 0, -0.123f, 0.48f }, { 0, -0.212f, 0.52f } };   /* y mas bajo: el arma ya no tapa el centro de la pantalla */
+    static const float ADSP[4][3] = { { 0, -0.134f, 0.46f }, { 0, -0.135f, 0.50f }, { 0, -0.123f, 0.48f }, { 0, -0.212f, 0.52f } };   /* y mas bajo: el arma ya no tapa el centro de la pantalla */
     float ad = bfAds, sa = bfSprA; bobx *= 1 - 0.85f * ad; boby *= 1 - 0.85f * ad;
     yaw = yaw * (1 - ad) + 0.0f * ad + 0.32f * sa; pitch = pitch * (1 - 0.6f * ad) + (-0.30f) * sa; roll = roll * (1 - ad) + 0.25f * sa;
 #endif
@@ -10274,37 +10562,8 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
     float pumpZ = 0.33f;
     if (w == 0) {          /* ---- pistola ---- */
         vpDrawVM(magSeated);                                                    /* VP70: 218 triangulos, ver VPM_* */
-    } else if (w == 1) {   /* ---- fusil ---- */
-        wbox(0, -0.012f, 0.00f, 0.027f, 0.036f, 0.115f, GM);
-        wbox(0, 0.030f, 0.02f, 0.029f, 0.027f, 0.14f, GD);
-        wbox(0.0295f, 0.026f, 0.025f, 0.002f, 0.016f, 0.045f, RGBA(12, 12, 14, 255));
-        wbox(0, 0.060f, 0.045f, 0.013f, 0.004f, 0.22f, GL);
-        for (int i = 0; i < 9; i++) wbox(0, 0.0635f, -0.06f + i * 0.057f, 0.0135f, 0.0025f, 0.012f, GD);
-        wbox(0, 0.058f, -0.075f, 0.009f, 0.009f, 0.014f, GL);
-        wbox(-0.032f, 0.01f, -0.03f, 0.004f, 0.007f, 0.012f, GL);
-        wbox(-0.029f, -0.02f, 0.01f, 0.004f, 0.01f, 0.012f, GL);
-        wbox(0, 0.018f, 0.33f, 0.034f, 0.034f, 0.18f, GM);
-        wbox(0, 0.056f, 0.33f, 0.013f, 0.004f, 0.18f, GL);
-        wbox(-0.036f, 0.018f, 0.33f, 0.004f, 0.013f, 0.15f, GL); wbox(0.036f, 0.018f, 0.33f, 0.004f, 0.013f, 0.15f, GL);
-        wbox(0, -0.018f, 0.33f, 0.013f, 0.004f, 0.15f, GL);
-        for (int i = 0; i < 5; i++) { wbox(-0.0345f, 0.018f, 0.20f + i * 0.065f, 0.0035f, 0.03f, 0.012f, GD); wbox(0.0345f, 0.018f, 0.20f + i * 0.065f, 0.0035f, 0.03f, 0.012f, GD); }
-        wbox(0, 0.02f, 0.58f, 0.011f, 0.011f, 0.06f, GD);
-        wbox(0, 0.045f, 0.50f, 0.012f, 0.014f, 0.022f, GL); wbox(0, 0.07f, 0.50f, 0.004f, 0.012f, 0.004f, GD);      /* mira frontal */
-        wbox(0, 0.02f, 0.665f, 0.017f, 0.017f, 0.028f, RGBA(18, 19, 22, 255));
-        for (int i = 0; i < 3; i++) wbox(0, 0.02f, 0.65f + i * 0.02f, 0.0185f, 0.0185f, 0.004f, GD);
-        wbox(0, 0.070f, 0.10f, 0.027f, 0.011f, 0.04f, GD);
-        /* mira de punto rojo hueca: solo el marco, sin cristal ni caja solida, para ver a traves */
-        wbox(0, 0.136f, 0.10f, 0.031f, 0.004f, 0.035f, GM); wbox(0, 0.080f, 0.10f, 0.031f, 0.004f, 0.035f, GM);
-        wbox(-0.027f, 0.108f, 0.10f, 0.004f, 0.028f, 0.035f, GM); wbox(0.027f, 0.108f, 0.10f, 0.004f, 0.028f, 0.035f, GM);
-        wbox(0, 0.115f, 0.0615f, 0.0035f, 0.0035f, 0.001f, RGBA(255, 70, 50, 255));
-        wbox(0, 0.142f, 0.10f, 0.02f, 0.006f, 0.03f, GD);
-        wbox(0, -0.06f, -0.07f, 0.021f, 0.03f, 0.021f, GD); wbox(0, -0.095f, -0.082f, 0.022f, 0.03f, 0.023f, GD); wbox(0, -0.125f, -0.09f, 0.024f, 0.006f, 0.025f, GM);
-        wbox(0, -0.052f, 0.045f, 0.004f, 0.006f, 0.05f, GM); wbox(0, -0.04f, -0.005f, 0.0035f, 0.014f, 0.004f, GL);
-        wbox(0, 0.004f, -0.17f, 0.017f, 0.017f, 0.075f, GM);
-        if (magSeated) {
-            wbox(0, -0.085f, 0.035f, 0.019f, 0.05f, 0.023f, GD); wbox(0, -0.15f, 0.045f, 0.0195f, 0.025f, 0.023f, GD); wbox(0, -0.19f, 0.055f, 0.021f, 0.016f, 0.024f, GM);
-            wbox(0, -0.115f, 0.0125f, 0.016f, 0.012f, 0.002f, GL); wbox(-0.0195f, -0.12f, 0.04f, 0.0015f, 0.03f, 0.014f, GM);
-        }
+    } else if (w == 1) {   /* ---- AK-47: 240 triangulos (AKM_*), el cargador sale al recargar ---- */
+        akDrawVM(magSeated);
     } else if (w == 2) {   /* ---- escopeta M37: 425 triangulos (SGM + SGP), la bomba sigue a la mano izquierda al montar ---- */
         if (reloading && u >= 0.72f) pumpZ = lh[2];
         sgDrawVM(pumpZ - 0.33f);
@@ -10339,9 +10598,9 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
     }
     if (wFlash > 0) {
         float m = d->mz;
-        wbox(0, d->grip[1] * 0 + (w == 0 ? 0.03f : (w == 2 ? 0.04f : 0.02f)), m + 0.02f, 0.045f, 0.045f, 0.03f, RGBA(255, 214, 110, 255));
-        wbox(0, (w == 0 ? 0.03f : (w == 2 ? 0.04f : 0.02f)), m - 0.01f, 0.022f, 0.022f, 0.03f, RGBA(255, 250, 220, 255));
-        wbox(0, (w == 0 ? 0.03f : (w == 2 ? 0.04f : 0.02f)), m + 0.04f, 0.012f, 0.07f, 0.01f, RGBA(255, 170, 60, 255)); wbox(0, (w == 0 ? 0.03f : (w == 2 ? 0.04f : 0.02f)), m + 0.04f, 0.07f, 0.012f, 0.01f, RGBA(255, 170, 60, 255));
+        wbox(0, d->grip[1] * 0 + (w == 0 ? 0.03f : (w == 2 ? 0.04f : (w == 1 ? -0.01f : 0.02f))), m + 0.02f, 0.045f, 0.045f, 0.03f, RGBA(255, 214, 110, 255));
+        wbox(0, (w == 0 ? 0.03f : (w == 2 ? 0.04f : (w == 1 ? -0.01f : 0.02f))), m - 0.01f, 0.022f, 0.022f, 0.03f, RGBA(255, 250, 220, 255));
+        wbox(0, (w == 0 ? 0.03f : (w == 2 ? 0.04f : (w == 1 ? -0.01f : 0.02f))), m + 0.04f, 0.012f, 0.07f, 0.01f, RGBA(255, 170, 60, 255)); wbox(0, (w == 0 ? 0.03f : (w == 2 ? 0.04f : (w == 1 ? -0.01f : 0.02f))), m + 0.04f, 0.07f, 0.012f, 0.01f, RGBA(255, 170, 60, 255));
     }
 }
 #ifdef PS2_ONLINE
@@ -10829,9 +11088,9 @@ static void fpsDraw(void) {
  * Los tramos son consecutivos (cada PF(...) asigna al tramo lo que paso desde la marca anterior), asi que la suma de los tramos es el cuadro completo.
  * "ESTE PANEL" es lo que cuesta dibujar el propio panel (restalo al comparar). "GS ENVIO/VSYNC" es espera, no trabajo de la CPU: si es grande, sobra tiempo.
  * Apagado no cuesta nada (un if por marca). */
-enum { PF_PLAYER, PF_AI, PF_FX, PF_RIG, PF_MISC, PF_WORLD, PF_BOTS, PF_FXD, PF_WEAPON, PF_HUD, PF_PROF, PF_SOUND, PF_GS, PF_N };
-static const char *const PF_NAME[PF_N] = { "JUGADOR/ARMA LOG", "IA BOTS", "FX/GRANADAS LOG", "ESQUELETOS", "RONDA/OTROS", "ESCENARIO", "SOLDADOS", "GRANADAS/HUMO/FX", "ARMA/MANOS", "HUD/MENUS", "ESTE PANEL", "SONIDO MEZCLA", "GS ENVIO/VSYNC" };
-static unsigned pfMark, pfSndT, pfTriCnt, pfRectCnt, pfMarkTri, pfMarkRect;
+enum { PF_PLAYER, PF_AI, PF_FX, PF_RIG, PF_MISC, PF_OCCL, PF_FLOOR, PF_WORLD, PF_BOTS, PF_FXD, PF_WEAPON, PF_HUD, PF_PROF, PF_SOUND, PF_GS, PF_N };
+static const char *const PF_NAME[PF_N] = { "JUGADOR/ARMA LOG", "IA BOTS", "FX/GRANADAS LOG", "ESQUELETOS", "RONDA/OTROS", "MAPA OCLUSION", "MAPA SUELO", "MAPA CAJAS", "SOLDADOS", "GRANADAS/HUMO/FX", "ARMA/MANOS", "HUD/MENUS", "ESTE PANEL", "SONIDO MEZCLA", "GS ENVIO/VSYNC" };
+static unsigned pfMark, pfSndT, pfTriCnt, pfRectCnt, pfMarkTri, pfMarkRect, pfGfxT; static float pfGfxAcc, pfGfxMs;      /* pfGfxT: ticks dentro de gfx_fan/gfx_tri (envio de poligonos a la GS) */
 static unsigned pfFT[PF_N], pfFTri[PF_N], pfFRect[PF_N];
 static float pfAcc[PF_N], pfWinT, pfFrameAcc, pfFramePeak, pfPeakWin; static unsigned pfTriAcc[PF_N], pfRectAcc[PF_N]; static int pfN;
 static float pfMs[PF_N], pfFrameMs, pfPeak; static int pfTri[PF_N], pfRect[PF_N];
@@ -10844,25 +11103,27 @@ static void pfTick(int k) {      /* asigna al tramo k todo lo ocurrido desde la 
 static void pfBegin(void) {
     if (!S.prof) return;
     for (int k = 0; k < PF_N; k++) { pfFT[k] = 0; pfFTri[k] = 0; pfFRect[k] = 0; }
-    pfMark = pfCount(); pfMarkTri = pfTriCnt; pfMarkRect = pfRectCnt;
+    pfMark = pfCount(); pfMarkTri = pfTriCnt; pfMarkRect = pfRectCnt; pfGfxT = 0;
 }
 static void pfEnd(void) {      /* acumula el cuadro y cada segundo actualiza los promedios mostrados */
     if (!S.prof) return;
+    pfGfxAcc += pfGfxT * (1.0f / 294912.0f);
     pfFT[PF_SOUND] += pfSndT; pfSndT = 0;      /* la mezcla de audio se mide en main(), despues de game_frame: entra con un cuadro de retraso */
     for (int k = 0; k < PF_N; k++) { pfAcc[k] += pfFT[k] * (1.0f / 294912.0f);      /* ticks del EE (294.912 MHz) a milisegundos */ pfTriAcc[k] += pfFTri[k]; pfRectAcc[k] += pfFRect[k]; }
     pfFrameAcc += fpsRawDt * 1000.0f; if (fpsRawDt * 1000.0f > pfPeakWin) pfPeakWin = fpsRawDt * 1000.0f; pfN++; pfWinT += fpsRawDt;
     if (pfWinT >= 1.0f && pfN > 0) {
         for (int k = 0; k < PF_N; k++) { pfMs[k] = pfAcc[k] / pfN; pfTri[k] = (int)(pfTriAcc[k] / pfN); pfRect[k] = (int)(pfRectAcc[k] / pfN); pfAcc[k] = 0; pfTriAcc[k] = 0; pfRectAcc[k] = 0; }
+        pfGfxMs = pfGfxAcc / pfN; pfGfxAcc = 0;
         pfFrameMs = pfFrameAcc / pfN; pfPeak = pfPeakWin; pfFrameAcc = 0; pfPeakWin = 0; pfN = 0; pfWinT = 0;
     }
 }
 static void pfDraw(void) {
     if (!S.prof) return;
-    float t = SH / 224.0f, sc = t * 0.6f, st = 10.5f * sc, adv = 7.4f, x0 = 2 * t, y = SH * 0.27f; char b[64];      /* letras y renglones mas separados para que se lea bien */
+    float t = SH / 224.0f, sc = t * 0.6f, st = 10.5f * sc, adv = 7.4f, x0 = 2 * t, y = SH * 0.22f; char b[64];      /* letras y renglones mas separados para que se lea bien */
     float sum = 0, cpu = 0; int tris = 0, rects = 0;
     for (int k = 0; k < PF_N; k++) { sum += pfMs[k]; if (k != PF_GS) cpu += pfMs[k]; tris += pfTri[k]; rects += pfRect[k]; }
     float w = 37 * adv * sc + 4 * t;
-    gfx_rect(x0 - t, y - t, x0 + w, y + (PF_N + 5) * st + 2 * t, RGBA(0, 0, 0, 170));
+    gfx_rect(x0 - t, y - t, x0 + w, y + (PF_N + 6) * st + 2 * t, RGBA(0, 0, 0, 170));
     drawTextAdv(x0 + t, y, sc, adv, "TRAMO            MS     TRI  RECT", RGBA(224, 168, 58, 255)); y += st;
     for (int k = 0; k < PF_N; k++) {
         int ms100 = (int)(pfMs[k] * 100.0f + 0.5f);
@@ -10875,6 +11136,7 @@ static void pfDraw(void) {
     snprintf(b, 64, "%-16s%3d.%02d %6d %5d", "CPU TOTAL", c100 / 100, c100 % 100, tris, rects); drawTextAdv(x0 + t, y, sc, adv, b, RGBA(111, 207, 151, 255)); y += st;
     snprintf(b, 64, "CUADRO %d.%02d MS  PICO %d.%02d MS", f100 / 100, f100 % 100, p100 / 100, p100 % 100); drawTextAdv(x0 + t, y, sc, adv, b, RGBA(232, 236, 233, 255)); y += st;
     snprintf(b, 64, "FUERA (PAD/OTROS) %d.%02d MS  BOTS %d", o100 / 100, o100 % 100, nbots); drawTextAdv(x0 + t, y, sc, adv, b, RGBA(143, 160, 166, 255)); y += st;
+    { int g100 = (int)(pfGfxMs * 100.0f + 0.5f); snprintf(b, 64, "DE ESO, ENVIO A GS %d.%02d MS", g100 / 100, g100 % 100); drawTextAdv(x0 + t, y, sc, adv, b, RGBA(143, 160, 166, 255)); y += st; }
 }
 
 /* ---------- Interpolacion de fotogramas (opcion "INTERPOLACION 60") ----------
@@ -11232,8 +11494,11 @@ void game_frame(const Pad *pd, float dt) {
             gfx_tri(0, 0, 1, top, SW, 0, 1, top, 0, hy, 1, SKY); gfx_tri(SW, 0, 1, top, SW, hy, 1, SKY, 0, hy, 1, SKY); }
     }
 #endif
+    PF(PF_MISC);
     occBuild();
+    PF(PF_OCCL);
     drawFloor();
+    PF(PF_FLOOR);
     for (int i = 0; i < nbox; i++) {
         Box *b = &boxes[i];
         if (!sphereVis((b->x0 + b->x1) * .5f, (b->top + b->bot) * .5f, (b->z0 + b->z1) * .5f, sqrtf((b->x1 - b->x0) * (b->x1 - b->x0) * .25f + (b->top - b->bot) * (b->top - b->bot) * .25f + (b->z1 - b->z0) * (b->z1 - b->z0) * .25f))) continue;      /* fuera de la vista: sin proyectar 8 vertices */
@@ -11513,6 +11778,7 @@ void gfx_end(void) {
 #endif
 #if GFX_FAN_GIF
 void gfx_fan(int n, const float *x, const float *y, const int *z, const u32c *c) {
+    unsigned pf0 = S.prof ? pfCount() : 0;
     if (n < 3) return;
     if (n > 30) n = 30;
     pfTriCnt += n - 2;
@@ -11525,9 +11791,11 @@ void gfx_fan(int n, const float *x, const float *y, const int *z, const u32c *c)
         *p++ = col(c[i], !tr);
         *p++ = GS_SETREG_XYZ2(gsKit_float_to_int_x(gs, x[i]), gsKit_float_to_int_y(gs, y[i]), z[i]);
     }
+    if (S.prof) pfGfxT += pfCount() - pf0;
 }
 #else
 void gfx_fan(int n, const float *x, const float *y, const int *z, const u32c *c) {
+    unsigned pf0 = S.prof ? pfCount() : 0;
     if (n > 30) n = 30;
     if (n < 3) return;
     int tr = 0;
@@ -11540,15 +11808,18 @@ void gfx_fan(int n, const float *x, const float *y, const int *z, const u32c *c)
         gsKit_prim_triangle_gouraud_3d(gs, x[0], y[0], z[0], x[i], y[i], z[i], x[i + 1], y[i + 1], z[i + 1], q[0], q[i], q[i + 1]);
     }
     gs->PrimAlphaEnable = GS_SETTING_OFF;
+    if (S.prof) pfGfxT += pfCount() - pf0;
 }
 #endif
 
 void gfx_tri(float x1, float y1, int z1, u32c c1, float x2, float y2, int z2, u32c c2, float x3, float y3, int z3, u32c c3) {
+    unsigned pf0 = S.prof ? pfCount() : 0;
     pfTriCnt++;
     int tr = CA(c1) < 255 || CA(c2) < 255 || CA(c3) < 255;      /* triangulos con alfa (humo, fuego, trazadoras): mezcla con lo ya dibujado */
     gs->PrimAlphaEnable = tr ? GS_SETTING_ON : GS_SETTING_OFF;
     gsKit_prim_triangle_gouraud_3d(gs, x1, y1, z1, x2, y2, z2, x3, y3, z3, col(c1, !tr), col(c2, !tr), col(c3, !tr));
     gs->PrimAlphaEnable = GS_SETTING_OFF;
+    if (S.prof) pfGfxT += pfCount() - pf0;
 }
 
 void gfx_rect(float x1, float y1, float x2, float y2, u32c c) {
