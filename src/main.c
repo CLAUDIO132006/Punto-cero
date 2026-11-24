@@ -7357,8 +7357,8 @@ static const unsigned char FONT[59][5] = {
     {0x63,0x14,8,0x14,0x63},{3,4,0x78,4,3},{0x61,0x59,0x49,0x4D,0x43}
 };
 static float textW(const char *s, float sc) { return (float)strlen(s) * 6 * sc; }
-static void drawText(float x, float y, float sc, const char *s, u32c col) {
-    for (; *s; s++, x += 6 * sc) {
+static void drawTextAdv(float x, float y, float sc, float adv, const char *s, u32c col) {      /* adv = avance por letra en unidades de sc (6 = normal) */
+    for (; *s; s++, x += adv * sc) {
         int ch = (unsigned char)*s;
         if (ch >= 'a' && ch <= 'z') ch -= 32;
         if (ch < 32 || ch > 90) continue;
@@ -7373,6 +7373,7 @@ static void drawText(float x, float y, float sc, const char *s, u32c col) {
         }
     }
 }
+static void drawText(float x, float y, float sc, const char *s, u32c col) { drawTextAdv(x, y, sc, 6.0f, s, col); }
 static void drawTextC(float cx, float y, float sc, const char *s, u32c col) { drawText(cx - textW(s, sc) * 0.5f + sc * 0.5f, y, sc, s, col); }
 
 /* ---------- Armas ---------- */
@@ -10822,7 +10823,7 @@ static void pfBegin(void) {
 static void pfEnd(void) {      /* acumula el cuadro y cada segundo actualiza los promedios mostrados */
     if (!S.prof) return;
     pfFT[PF_SOUND] += pfSndT; pfSndT = 0;      /* la mezcla de audio se mide en main(), despues de game_frame: entra con un cuadro de retraso */
-    for (int k = 0; k < PF_N; k++) { pfAcc[k] += pfFT[k] * (1000.0f / 294912.0f); pfTriAcc[k] += pfFTri[k]; pfRectAcc[k] += pfFRect[k]; }
+    for (int k = 0; k < PF_N; k++) { pfAcc[k] += pfFT[k] * (1.0f / 294912.0f);      /* ticks del EE (294.912 MHz) a milisegundos */ pfTriAcc[k] += pfFTri[k]; pfRectAcc[k] += pfFRect[k]; }
     pfFrameAcc += fpsRawDt * 1000.0f; if (fpsRawDt * 1000.0f > pfPeakWin) pfPeakWin = fpsRawDt * 1000.0f; pfN++; pfWinT += fpsRawDt;
     if (pfWinT >= 1.0f && pfN > 0) {
         for (int k = 0; k < PF_N; k++) { pfMs[k] = pfAcc[k] / pfN; pfTri[k] = (int)(pfTriAcc[k] / pfN); pfRect[k] = (int)(pfRectAcc[k] / pfN); pfAcc[k] = 0; pfTriAcc[k] = 0; pfRectAcc[k] = 0; }
@@ -10831,23 +10832,23 @@ static void pfEnd(void) {      /* acumula el cuadro y cada segundo actualiza los
 }
 static void pfDraw(void) {
     if (!S.prof) return;
-    float t = SH / 224.0f, sc = t * 0.62f, st = 7.4f * sc, x0 = 2 * t, y = SH * 0.30f; char b[64];
+    float t = SH / 224.0f, sc = t * 0.6f, st = 10.5f * sc, adv = 7.4f, x0 = 2 * t, y = SH * 0.27f; char b[64];      /* letras y renglones mas separados para que se lea bien */
     float sum = 0, cpu = 0; int tris = 0, rects = 0;
     for (int k = 0; k < PF_N; k++) { sum += pfMs[k]; if (k != PF_GS) cpu += pfMs[k]; tris += pfTri[k]; rects += pfRect[k]; }
-    float w = 40 * 6 * sc + 4 * t;
+    float w = 37 * adv * sc + 4 * t;
     gfx_rect(x0 - t, y - t, x0 + w, y + (PF_N + 5) * st + 2 * t, RGBA(0, 0, 0, 170));
-    drawText(x0 + t, y, sc, "TRAMO            MS     TRI  RECT", RGBA(224, 168, 58, 255)); y += st;
+    drawTextAdv(x0 + t, y, sc, adv, "TRAMO            MS     TRI  RECT", RGBA(224, 168, 58, 255)); y += st;
     for (int k = 0; k < PF_N; k++) {
         int ms100 = (int)(pfMs[k] * 100.0f + 0.5f);
         snprintf(b, 64, "%-16s%3d.%02d %6d %5d", PF_NAME[k], ms100 / 100, ms100 % 100, pfTri[k], pfRect[k]);
         float pc = pfFrameMs > 0.01f ? pfMs[k] / pfFrameMs : 0;      /* parte del cuadro: rojo > 30%, ambar > 15% (el tramo GS es espera) */
         u32c c = k == PF_GS ? RGBA(143, 160, 166, 255) : (pc > 0.30f ? RGBA(229, 72, 77, 255) : (pc > 0.15f ? RGBA(224, 168, 58, 255) : RGBA(232, 236, 233, 255)));
-        drawText(x0 + t, y, sc, b, c); y += st;
+        drawTextAdv(x0 + t, y, sc, adv, b, c); y += st;
     }
     int c100 = (int)(cpu * 100.0f + 0.5f), f100 = (int)(pfFrameMs * 100.0f + 0.5f), p100 = (int)(pfPeak * 100.0f + 0.5f), o100 = (int)((pfFrameMs - sum) * 100.0f + 0.5f); if (o100 < 0) o100 = 0;
-    snprintf(b, 64, "%-16s%3d.%02d %6d %5d", "CPU TOTAL", c100 / 100, c100 % 100, tris, rects); drawText(x0 + t, y, sc, b, RGBA(111, 207, 151, 255)); y += st;
-    snprintf(b, 64, "CUADRO %d.%02d MS  PICO %d.%02d MS", f100 / 100, f100 % 100, p100 / 100, p100 % 100); drawText(x0 + t, y, sc, b, RGBA(232, 236, 233, 255)); y += st;
-    snprintf(b, 64, "FUERA (PAD/OTROS) %d.%02d MS  BOTS %d", o100 / 100, o100 % 100, nbots); drawText(x0 + t, y, sc, b, RGBA(143, 160, 166, 255)); y += st;
+    snprintf(b, 64, "%-16s%3d.%02d %6d %5d", "CPU TOTAL", c100 / 100, c100 % 100, tris, rects); drawTextAdv(x0 + t, y, sc, adv, b, RGBA(111, 207, 151, 255)); y += st;
+    snprintf(b, 64, "CUADRO %d.%02d MS  PICO %d.%02d MS", f100 / 100, f100 % 100, p100 / 100, p100 % 100); drawTextAdv(x0 + t, y, sc, adv, b, RGBA(232, 236, 233, 255)); y += st;
+    snprintf(b, 64, "FUERA (PAD/OTROS) %d.%02d MS  BOTS %d", o100 / 100, o100 % 100, nbots); drawTextAdv(x0 + t, y, sc, adv, b, RGBA(143, 160, 166, 255)); y += st;
 }
 
 /* ---------- Interpolacion de fotogramas (opcion "INTERPOLACION 60") ----------
