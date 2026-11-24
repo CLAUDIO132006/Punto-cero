@@ -7131,9 +7131,10 @@ static int frCulled, frCulledShow;      /* objetos descartados por el frustum en
 static int sphereVis(float wx, float wy, float wz, float r) {
     float x, y, z; toView(wx, wy, wz, &x, &y, &z);
     if (z + r < NEAR) { frCulled++; return 0; }
-    float lx = (SW * 0.5f) / camF, ly = (SH * 0.5f) / camF;
-    if (x - lx * z > r * sqrtf(1 + lx * lx) || -x - lx * z > r * sqrtf(1 + lx * lx)) { frCulled++; return 0; }
-    if (y - ly * z > r * sqrtf(1 + ly * ly) || -y - ly * z > r * sqrtf(1 + ly * ly)) { frCulled++; return 0; }
+    static float svF = -1, lx, ly, sx, sy;      /* constantes del campo de vision: se recalculan solo si cambia el zoom */
+    if (svF != camF) { svF = camF; lx = (SW * 0.5f) / camF; ly = (SH * 0.5f) / camF; sx = sqrtf(1 + lx * lx); sy = sqrtf(1 + ly * ly); }
+    if (x - lx * z > r * sx || -x - lx * z > r * sx) { frCulled++; return 0; }
+    if (y - ly * z > r * sy || -y - ly * z > r * sy) { frCulled++; return 0; }
     return 1;
 }
 
@@ -7165,7 +7166,21 @@ static void ocFace(float ax, float az, float bx, float bz, float top) {      /* 
     float zf = fmaxf(fmaxf(p[0][2], p[1][2]), fmaxf(p[2][2], p[3][2])), cw = SW / (float)OC_W, ch = SH / (float)OC_H;
     int c0 = (int)ceilf(xl / cw), c1 = (int)floorf(xr / cw) - 1, r0 = (int)ceilf(yt / ch), r1 = (int)floorf(yb / ch) - 1;
     if (c0 < 0) c0 = 0; if (r0 < 0) r0 = 0; if (c1 > OC_W - 1) c1 = OC_W - 1; if (r1 > OC_H - 1) r1 = OC_H - 1;
-    for (int j = r0; j <= r1; j++) for (int i = c0; i <= c1; i++) if (zf < ocFar[j][i]) ocFar[j][i] = zf;
+    /* Profundidad por columna: 1/z es afin en pantalla sobre un plano, asi que en cada columna se usa la z real mas lejana de esa franja de pared
+     * (y no la de su extremo mas lejano). Una pared en diagonal ocluye mucho mas lo que tiene detras. Sigue siendo conservador. */
+    float dxb = p[r][0] - p[l][0], dxt = p[r + 2][0] - p[l + 2][0], sb = 0, st = 0;
+    float wbl = 1.0f / p[l][2], wtl = 1.0f / p[l + 2][2];
+    int fine = dxb > 1e-3f && dxt > 1e-3f;
+    if (fine) { sb = (1.0f / p[r][2] - wbl) / dxb; st = (1.0f / p[r + 2][2] - wtl) / dxt; }
+    for (int i = c0; i <= c1; i++) {
+        float zc = zf;
+        if (fine) {
+            float xa = i * cw, xb = xa + cw;
+            float wm = fminf(fminf(wbl + sb * (xa - p[l][0]), wbl + sb * (xb - p[l][0])), fminf(wtl + st * (xa - p[l + 2][0]), wtl + st * (xb - p[l + 2][0])));
+            if (wm > 1e-6f) { float z = 1.002f / wm; if (z < zc) zc = z; }
+        }
+        for (int j = r0; j <= r1; j++) if (zc < ocFar[j][i]) ocFar[j][i] = zc;
+    }
 }
 static void occBuild(void) {
     for (int j = 0; j < OC_H; j++) for (int i = 0; i < OC_W; i++) ocFar[j][i] = 1e30f;
@@ -7202,9 +7217,11 @@ static unsigned char botOcc[MAXBOT];      /* 1 si drawBots descarto al soldado p
 static int fxScreenOut(float sx, float sy, float rad) { return FX_CULL && (sx + rad < 0 || sx - rad > SW || sy + rad < 0 || sy - rad > SH); }
 static int fxHidden(float x, float y, float z, float r) { return FX_CULL && ocHidden(x - r, y - r, z - r, x + r, y + r, z + r); }
 static void emitPoly(V *in, int n, int overlay) {
-    V out[12]; int m = 0;
-    for (int i = 0; i < n; i++) {
-        V *a = &in[i], *b = &in[(i + 1) % n];
+    V out[12]; int m = 0, allNear = 1;
+    for (int i = 0; i < n; i++) if (in[i].z < NEAR) { allNear = 0; break; }
+    if (allNear) { for (int i = 0; i < n; i++) out[i] = in[i]; m = n; }      /* camino rapido (lo normal): nada que recortar contra el plano cercano */
+    else for (int i = 0; i < n; i++) {
+        V *a = &in[i], *b = &in[i + 1 < n ? i + 1 : 0];
         int ain = a->z >= NEAR, bin = b->z >= NEAR;
         if (ain) out[m++] = *a;
         if (ain != bin) {
@@ -7224,19 +7241,21 @@ static void emitPoly(V *in, int n, int overlay) {
         a[i].z = overlay ? 16200000.0f + 50000.0f * iz : 16777000.0f * 0.1f * iz;   /* el arma y las manos siempre delante, ordenados por profundidad */
         a[i].r = out[i].r; a[i].g = out[i].g; a[i].b = out[i].b;
     }
+    const float M = 128.0f, lim[4] = { -M, SW + M, -M, SH + M };
+    int needClip = 1;
     {   /* descarte: poligono entero fuera de la pantalla, o de area casi nula (de canto) */
         float mnx = a[0].x, mxx = mnx, mny = a[0].y, mxy = mny, ar = 0;
         for (int i = 1; i < m; i++) { if (a[i].x < mnx) mnx = a[i].x; if (a[i].x > mxx) mxx = a[i].x; if (a[i].y < mny) mny = a[i].y; if (a[i].y > mxy) mxy = a[i].y; }
         if (mxx < 0 || mnx > SW || mxy < 0 || mny > SH) return;
-        for (int i = 0; i < m; i++) { int j = (i + 1) % m; ar += a[i].x * a[j].y - a[j].x * a[i].y; }
+        for (int i = 0; i < m; i++) { int j = i + 1 < m ? i + 1 : 0; ar += a[i].x * a[j].y - a[j].x * a[i].y; }
         if (fabsf(ar) < 0.02f) return;
+        if (mnx >= lim[0] && mxx <= lim[1] && mny >= lim[2] && mxy <= lim[3]) needClip = 0;      /* todo dentro del margen: el recorte 2D no cambiaria nada */
     }
     /* Recorte 2D contra la pantalla con margen: la GS solo admite coordenadas acotadas. */
-    const float M = 128.0f, lim[4] = { -M, SW + M, -M, SH + M };
-    for (int e = 0; e < 4 && na >= 3; e++) {
+    for (int e = 0; e < 4 && na >= 3 && needClip; e++) {
         int nb = 0;
         for (int i = 0; i < na; i++) {
-            SV *p = &a[i], *q = &a[(i + 1) % na];
+            SV *p = &a[i], *q = &a[i + 1 < na ? i + 1 : 0];
             float pv = (e < 2) ? p->x : p->y, qv = (e < 2) ? q->x : q->y;
             int pin = (e & 1) ? pv <= lim[e] : pv >= lim[e];
             int qin = (e & 1) ? qv <= lim[e] : qv >= lim[e];
@@ -7269,9 +7288,8 @@ static const int FACE[6][4] = { {0,4,6,2}, {1,3,7,5}, {0,1,5,4}, {2,6,7,3}, {0,2
 static const float FN[6][3] = { {-1,0,0}, {1,0,0}, {0,-1,0}, {0,1,0}, {0,0,-1}, {0,0,1} };
 
 /* Caja orientada en el mundo (giro en Y). */
-static void obox(float cx, float cy, float cz, float hw, float hh, float hd, float yaw, u32c col) {
-    if (!sphereVis(cx, cy, cz, sqrtf(hw * hw + hh * hh + hd * hd))) return;
-    float c[8][3], ys = sinf(yaw), yc = cosf(yaw);
+static void oboxNC(float cx, float cy, float cz, float hw, float hh, float hd, float yaw, u32c col) {      /* sin la prueba de visibilidad (el que llama ya la hizo) */
+    float c[8][3], ys = yaw == 0 ? 0.0f : sinf(yaw), yc = yaw == 0 ? 1.0f : cosf(yaw);      /* casi todas las cajas del mapa van sin giro: se evita sinf/cosf (lentos en el EE) */
     for (int i = 0; i < 8; i++) {
         float lx = (i & 1) ? hw : -hw, ly = (i & 2) ? hh : -hh, lz = (i & 4) ? hd : -hd;
         c[i][0] = cx + lx * yc + lz * ys; c[i][1] = cy + ly; c[i][2] = cz - lx * ys + lz * yc;
@@ -7300,6 +7318,11 @@ static void obox(float cx, float cy, float cz, float hw, float hh, float hd, flo
         }
         emitPoly(v, 4, 0);
     }
+}
+
+static void obox(float cx, float cy, float cz, float hw, float hh, float hd, float yaw, u32c col) {
+    if (!sphereVis(cx, cy, cz, sqrtf(hw * hw + hh * hh + hd * hd))) return;
+    oboxNC(cx, cy, cz, hw, hh, hd, yaw, col);
 }
 
 /* Caja en espacio de camara, siempre por delante del mundo (arma en primera persona). */
@@ -9813,6 +9836,9 @@ static void rigWeapBoxes(const M34 *wm, const float (*bxs)[7], int nb) {
 }
 static const M34 *rigOverG = NULL;      /* si no es NULL, drawRig usa estas matrices de hueso (ragdoll) en vez de la animacion */
 static float rigLeanAng, rigLeanPivY;      /* inclinacion lateral del cuerpo (rad, + = derecha) y altura de la cadera: solo para el personaje del jugador */
+#ifndef RIG_FAR_LOD
+#define RIG_FAR_LOD 18.0f      /* metros a partir de los cuales los soldados pierden detalles pequenos (ojos, rodilleras, guantes); antes 26 */
+#endif
 static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, int weap, float wx, float wy, float wz, float yaw, float tr, float tg, float tb, float flash) {
     if (!sphereVis(wx, wy + 0.9f, wz, 1.8f)) return;     /* fuera de la vista: no se transforma */
     static float tv[600][3];
@@ -9840,7 +9866,7 @@ static void drawRig(const Model *m, const Rig *g, float pitch, float reloadU, in
     }
     /* Malla de cajas rigidas (los soldados): cada cara se descarta de espaldas con la camara llevada al espacio de su hueso (sin proyectar nada) y solo se
      * transforman los vertices de las caras que si se ven. De lejos tambien se omiten los detalles pequenos (ojos, rodilleras, guantes). */
-    int fast = m->fa != NULL && m->nv <= 600 && !(g->dead && !rigOverG), farLod = (camX - wx) * (camX - wx) + (camZ - wz) * (camZ - wz) > 26.0f * 26.0f;
+    int fast = m->fa != NULL && m->nv <= 600 && !(g->dead && !rigOverG), farLod = (camX - wx) * (camX - wx) + (camZ - wz) * (camZ - wz) > RIG_FAR_LOD * RIG_FAR_LOD;
     static unsigned char tvOk[600], clOk[BN_N]; static float cl[BN_N][3];
     if (fast) { memset(tvOk, 0, (size_t)m->nv); memset(clOk, 0, sizeof clOk); }
     else for (int i = 0; i < m->nv && i < 600; i++) {
@@ -11212,7 +11238,7 @@ void game_frame(const Pad *pd, float dt) {
         Box *b = &boxes[i];
         if (!sphereVis((b->x0 + b->x1) * .5f, (b->top + b->bot) * .5f, (b->z0 + b->z1) * .5f, sqrtf((b->x1 - b->x0) * (b->x1 - b->x0) * .25f + (b->top - b->bot) * (b->top - b->bot) * .25f + (b->z1 - b->z0) * (b->z1 - b->z0) * .25f))) continue;      /* fuera de la vista: sin proyectar 8 vertices */
         if (ocHidden(b->x0, b->bot, b->z0, b->x1, b->top, b->z1)) continue;
-        obox((b->x0 + b->x1) * .5f, (b->top + b->bot) * .5f, (b->z0 + b->z1) * .5f, (b->x1 - b->x0) * .5f, (b->top - b->bot) * .5f, (b->z1 - b->z0) * .5f, 0, b->col);
+        oboxNC((b->x0 + b->x1) * .5f, (b->top + b->bot) * .5f, (b->z0 + b->z1) * .5f, (b->x1 - b->x0) * .5f, (b->top - b->bot) * .5f, (b->z1 - b->z0) * .5f, 0, b->col);      /* sphereVis ya se probo arriba */
     }
     PF(PF_WORLD);
     specSkip = (!P.alive && mode == M_PLAYING && !sandbox && !netMode) ? specBot() : -1;      /* el aliado que observas no se dibuja: la camara esta en su cabeza */
@@ -11503,7 +11529,17 @@ void gfx_fan(int n, const float *x, const float *y, const int *z, const u32c *c)
 #else
 void gfx_fan(int n, const float *x, const float *y, const int *z, const u32c *c) {
     if (n > 30) n = 30;
-    for (int i = 1; i + 1 < n; i++) gfx_tri(x[0], y[0], z[0], c[0], x[i], y[i], z[i], c[i], x[i + 1], y[i + 1], z[i + 1], c[i + 1]);
+    if (n < 3) return;
+    int tr = 0;
+    for (int i = 0; i < n; i++) if (CA(c[i]) < 255) { tr = 1; break; }      /* alfa y color se calculan una vez por poligono, no una vez por triangulo */
+    u64 q[30];
+    for (int i = 0; i < n; i++) q[i] = col(c[i], !tr);
+    gs->PrimAlphaEnable = tr ? GS_SETTING_ON : GS_SETTING_OFF;
+    for (int i = 1; i + 1 < n; i++) {
+        pfTriCnt++;
+        gsKit_prim_triangle_gouraud_3d(gs, x[0], y[0], z[0], x[i], y[i], z[i], x[i + 1], y[i + 1], z[i + 1], q[0], q[i], q[i + 1]);
+    }
+    gs->PrimAlphaEnable = GS_SETTING_OFF;
 }
 #endif
 
