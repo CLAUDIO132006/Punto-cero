@@ -9343,6 +9343,8 @@ static int mode = M_MENU, prevMode = M_PLAYING, sel = 0, settingsFrom = M_MENU;
 static int sandbox, codeD[4], codePos; static float codeBad;      /* modo secreto (codigo 1122): campo de pruebas */
 static int wsel, ammoMag[5], ammoRes[5];
 static float wCD, wReload, wSwap, wKick, wFlash, freeze, afterT, orbit, hitFlash, hmT, hurtT, bannerT;
+static float wInsU; static int wInsOn;          /* inspeccion del arma (SELECT): avance 0..1 y si esta activa */
+#define INS_T 4.6f
 static int scoreMe, scoreBots, roundNo, kills, heads, deaths, firedLatch;
 #ifdef PS2_ONLINE
 /* ---- Estilo de juego "tactico moderno" (solo version PS2): apuntado, sprint, granadas, radar ---- */
@@ -9486,7 +9488,7 @@ static void spawnBots(void) {      /* el jugador ya esta colocado: los soldados 
 }
 static void resetAmmo(void) {
     for (int i = 0; i < 5; i++) { ammoMag[i] = W[i].mag; ammoRes[i] = W[i].reserve; }
-    wsel = 0; wCD = wReload = wSwap = wKick = wFlash = 0; firedLatch = 0;
+    wsel = 0; wCD = wReload = wSwap = wKick = wFlash = 0; firedLatch = 0; wInsOn = 0; wInsU = 0;
 #ifdef PS2_ONLINE
     bfAds = bfBloom = bfShake = bfSprA = bfNadeT = 0; bfStam = 1; bfSprint = bfStamLock = bfNadePend = 0; bfNadeSt = 0; bfNadeU = bfThrowT = 0; bfNades = netMode ? 0 : 2; bfSmokes = netMode ? 0 : 2; bfNadeKind = 0;
     bfLean = bfLeanFrac = bfRest = 0; bfLeanOffX = bfLeanOffZ = bfLeanDrop = 0;
@@ -10995,7 +10997,6 @@ static void updatePlayer(const Pad *pd, float dt, int canAct) {
             circHold = 0; circLong = 0;
         }
         circPrev = cd;
-        if (canAct && P.alive && (pd->pressed & B_SELECT)) { if (P.prone) { P.prone = 0; P.crWant = 0; } else P.crWant = !P.crWant; }
     }
 #else
     int walk = (pd->down & B_CIRCLE) != 0;
@@ -11091,7 +11092,7 @@ static void updateWeapon(const Pad *pd, float dt, int canAct) {
     wKick = fmaxf(0, wKick - dt * (wsel == 4 ? 4.5f : 9));      /* AK: recupera en ~0,25 s tras un disparo suelto */ wFlash = fmaxf(0, wFlash - dt);
 #ifdef PS2_ONLINE
     if ((!canAct || !P.alive) && bfNadeSt) { bfNadeSt = 0; bfNadePend = 0; bfNadeU = 0; }
-    if (!canAct || !P.alive) { bfPlateSt = 0; bfPlateU = 0; }
+    if (!canAct || !P.alive) { bfPlateSt = 0; bfPlateU = 0; wInsOn = 0; }
 #endif
     if (!canAct || !P.alive) return;
 #ifdef PS2_ONLINE
@@ -11109,6 +11110,21 @@ static void updateWeapon(const Pad *pd, float dt, int canAct) {
             bfArmor = fminf(PLATE_HP * PLATE_N, bfArmor + PLATE_HP); bfPlates--; bfPlateChain++;
             if ((pd->down & B_L2) && bfPlates > 0 && bfArmor < PLATE_HP * PLATE_N - 0.01f) { bfPlateU = 0; bfPlateSnd = 0; }      /* L2 mantenido: siguiente placa (el chaleco ya esta abierto: no vuelve a sonar la apertura) */
             else { bfPlateSt = 0; bfPlateU = 0; bfPlateChain = 0; bfPlateCloseT = 0.35f; }                              /* fin de la tanda: cerrar el chaleco */
+        }
+    }
+    {   /* inspeccion del arma: SELECT la empieza (otra vez SELECT la cancela); disparar, apuntar, correr, recargar, cambiar de arma, granada o placa la interrumpen */
+        int busy = wReload > 0 || wSwap > 0 || bfSprint || bfNadePend || bfPlateSt || (pd->down & (B_R1 | B_L1));
+        if (wInsOn && (busy || (pd->pressed & B_SELECT))) wInsOn = 0;
+        else if (!wInsOn && !busy && (pd->pressed & B_SELECT)) { wInsOn = 1; wInsU = 0; }
+        if (wInsOn) {
+            float u0 = wInsU; wInsU += dt / INS_T;
+            if (wsel == 2) { if ((u0 < 0.30f && wInsU >= 0.30f) || (u0 < 0.46f && wInsU >= 0.46f) || (u0 < 0.88f && wInsU >= 0.88f)) snd_play(SND_TICK, 0.8f); }
+            else {
+                if (u0 < 0.20f && wInsU >= 0.20f) snd_play(SND_TICK, 0.7f);                       /* suelta el cargador */
+                if (u0 < 0.88f && wInsU >= 0.88f) snd_play(SND_TICK, 0.8f);                       /* el cargador entra */
+                if (u0 < 0.92f && wInsU >= 0.92f) snd_play(SND_EMPTY, 0.5f);                      /* golpe de la palma */
+            }
+            if (wInsU >= 1.0f) wInsOn = 0;
         }
     }
     int trig = (pd->down & B_R1) != 0 && !bfSprint && !bfPlateSt;
@@ -12715,7 +12731,13 @@ static void akDrawVM(int withMag) {
     float pv[AKM_NV][3];
     for (int i = 0; i < AKM_NV; i++) wpt(AKM_V[i * 3], AKM_V[i * 3 + 1], AKM_V[i * 3 + 2], pv[i]);
     int nt = withMag ? AKM_NT : AKM_NTB;
+#ifdef PS2_ONLINE
+    float cutZ = bfAds > 0.5f ? 0.14f : -1e9f;             /* apuntando: lo que queda detras de la mira trasera (culata, parte trasera del receptor) no se dibuja */
+#else
+    float cutZ = -1e9f;
+#endif
     for (int t = 0; t < nt; t++) {
+        if (cutZ > -1e8f && AKM_V[AKM_T[t * 3] * 3 + 2] < cutZ && AKM_V[AKM_T[t * 3 + 1] * 3 + 2] < cutZ && AKM_V[AKM_T[t * 3 + 2] * 3 + 2] < cutZ) continue;
         const float *a = pv[AKM_T[t * 3]], *b = pv[AKM_T[t * 3 + 1]], *c = pv[AKM_T[t * 3 + 2]];
         float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
         float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, nl = nx * nx + ny * ny + nz * nz;
@@ -12759,34 +12781,114 @@ static void handLPistol(float lx, float ly, float lz, const float *anchor) {   /
     u32c SL = RGBA(176, 152, 110, 255), SP = RGBA(142, 120, 84, 255);
     float a[3]; wpt(lx - 0.045f, ly - 0.035f, lz - 0.075f, a); limb(anchor, a, 0.036f, SP, SL);
 }
+
+/* cargador suelto del AK (al recargar o inspeccionar): los mismos triangulos curvos del cargador de la malla, centrados en el punto de agarre */
+static float akMagA[3]; static int akMagInit;
+static void akMagLoose(float x, float y, float z) {
+    if (!akMagInit) {
+        float my = -1e9f; for (int t = AKM_NTB; t < AKM_NT; t++) for (int k = 0; k < 3; k++) { float vy = AKM_V[AKM_T[t * 3 + k] * 3 + 1]; if (vy > my) my = vy; }
+        float sx = 0, sz = 0; int n = 0;
+        for (int t = AKM_NTB; t < AKM_NT; t++) for (int k = 0; k < 3; k++) { int i = AKM_T[t * 3 + k]; if (AKM_V[i * 3 + 1] > my - 0.012f) { sx += AKM_V[i * 3]; sz += AKM_V[i * 3 + 2]; n++; } }
+        akMagA[0] = sx / n; akMagA[1] = my - 0.06f; akMagA[2] = sz / n; akMagInit = 1;
+    }
+    for (int t = AKM_NTB; t < AKM_NT; t++) {
+        float pv[3][3];
+        for (int k = 0; k < 3; k++) { int i = AKM_T[t * 3 + k]; wpt(AKM_V[i * 3] - akMagA[0] + x, AKM_V[i * 3 + 1] - akMagA[1] + y, AKM_V[i * 3 + 2] - akMagA[2] + z, pv[k]); }
+        const float *a = pv[0], *b = pv[1], *c = pv[2];
+        float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+        float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, nl = nx * nx + ny * ny + nz * nz;
+        if (nl < 1e-24f) continue;
+        if (nx * a[0] + ny * a[1] + nz * a[2] >= 0) continue;
+        nl = 1.0f / sqrtf(nl); nx *= nl; ny *= nl;
+        float shade = clampf(0.7f + 0.3f * (ny * 0.8f - nx * 0.35f), 0.45f, 1.0f);
+        u32c col = AK_PAL[AKM_C[t]]; V v[3];
+        for (int k = 0; k < 3; k++) { v[k].x = pv[k][0]; v[k].y = pv[k][1]; v[k].z = pv[k][2]; v[k].r = CR(col) * shade; v[k].g = CG(col) * shade; v[k].b = CB(col) * shade; }
+        emitPoly(v, 3, 1);
+    }
+}
 static void magItem(int w, float x, float y, float z) {   /* cargador (o caja) segun el arma */
+    if (w == 4) { akMagLoose(x, y, z); return; }
     if (w == 0) { wbox(x, y, z, 0.016f, 0.036f, 0.019f, C_GD); wbox(x, y - 0.038f, z, 0.018f, 0.006f, 0.021f, C_GM); }
     else if (w == 1 || w == 4) { wbox(x, y, z, 0.019f, 0.05f, 0.023f, C_GD); wbox(x, y - 0.05f, z + 0.01f, 0.0195f, 0.025f, 0.023f, C_GD); wbox(x, y - 0.09f, z + 0.02f, 0.021f, 0.016f, 0.024f, C_GM); }
     else { wbox(x, y, z, 0.05f, 0.05f, 0.07f, C_GD); wbox(x, y + 0.052f, z, 0.046f, 0.004f, 0.066f, C_GM); wbox(x - 0.05f, y + 0.02f, z, 0.004f, 0.01f, 0.05f, C_BR); }
+}
+
+/* ---- inspeccion del arma (tipo Warzone): ladea el arma, la mano izquierda saca el cargador y lo gira para ver la bala, el arma da una vuelta completa y el cargador vuelve a entrar ----
+ * u 0..1: .06-.20 la mano baja al cargador | .20-.36 lo saca y lo trae al centro | .36-.54 lo gira mostrando las balas | .54-.80 el arma gira 360 grados | .80-.90 lo mete | .90-.98 la mano vuelve
+ * Escopeta: sin cargador; la mano izquierda bombea dos veces, el arma gira y bombea otra vez. */
+static float insFlip(float u) { return smooth(clampf((u - 0.54f) / 0.26f, 0, 1)); }
+static void insPose(float u, float *yaw, float *pitch, float *roll, float *o) {
+    float on = smooth(clampf(u / 0.10f, 0, 1)) * (1 - smooth(clampf((u - 0.90f) / 0.10f, 0, 1)));
+    float t = clampf((u - 0.54f) / 0.26f, 0, 1), bump = sinf(PI * t);
+    *yaw += -0.16f * on; *pitch += 0.06f * on + 0.14f * bump; *roll += 0.28f * on + 6.2831853f * insFlip(u);
+    o[0] += -0.02f * on; o[1] += 0.02f * on + 0.035f * bump;
+}
+static float insPump(float u) {
+    static const float T[3][2] = { { 0.22f, 0.38f }, { 0.38f, 0.54f }, { 0.82f, 0.94f } };
+    for (int i = 0; i < 3; i++) if (u >= T[i][0] && u < T[i][1]) return -0.10f * sinf(PI * (u - T[i][0]) / (T[i][1] - T[i][0]));
+    return 0;
+}
+static void ins3(const float *a, const float *b, float t, float *o) { for (int i = 0; i < 3; i++) o[i] = a[i] + (b[i] - a[i]) * t; }
+static int insLeft(const VMDef *d, float u, float *P, float *ang, const float *base) {   /* P = mano izquierda (espacio de vista), ang = giro del cargador; 1 si el cargador esta fuera */
+    float H0[3], Wl[3], D[3] = { -0.03f, -0.05f, 0.30f };
+    wpt(d->key[0][1], d->key[0][2], d->key[0][3], H0); wpt(d->key[1][1], d->key[1][2], d->key[1][3], Wl);
+    if (u < 0.20f) ins3(H0, Wl, smooth(clampf((u - 0.06f) / 0.14f, 0, 1)), P);
+    else if (u < 0.36f) ins3(Wl, D, smooth((u - 0.20f) / 0.16f), P);
+    else if (u < 0.80f) { float s = u - 0.36f, e = 1 - smooth(clampf((u - 0.74f) / 0.06f, 0, 1)); P[0] = D[0] + 0.012f * sinf(s * 9) * e; P[1] = D[1] + 0.008f * sinf(s * 7) * e; P[2] = D[2]; }
+    else if (u < 0.90f) ins3(D, Wl, smooth((u - 0.80f) / 0.10f), P);
+    else ins3(Wl, H0, smooth(clampf((u - 0.90f) / 0.08f, 0, 1)), P);
+    float f = u < 0.80f ? smooth(clampf((u - 0.20f) / 0.16f, 0, 1)) : 1 - smooth(clampf((u - 0.80f) / 0.10f, 0, 1));
+    float sw = smooth(clampf((u - 0.36f) / 0.18f, 0, 1));
+    ang[0] = base[0] * (1 - f) + (0.55f - 1.1f * sw) * f;
+    ang[1] = base[1] * (1 - f) + 1.05f * f;
+    ang[2] = base[2] * (1 - f) + 0.15f * f;
+    return u >= 0.20f && u < 0.90f;
+}
+static void insDrawLeft(const VMDef *d, int w, float u, const float *AL, float by, float bp, float br) {   /* mano izquierda con su propio espacio (no gira con el arma) y el cargador con sus balas */
+    float P[3], ang[3], sWR[3][3], sWT[3], base[3] = { by, bp, br };
+    memcpy(sWR, WR, sizeof sWR); memcpy(sWT, WT, sizeof sWT);
+    int out = insLeft(d, u, P, ang, base);
+    rotMat(by, bp, br, WR); for (int j = 0; j < 3; j++) WT[j] = P[j];
+    handL(0, 0, 0, AL, 1);
+    if (out) {
+        rotMat(ang[0], ang[1], ang[2], WR);
+        magItem(w, 0, 0.02f, 0);
+        float ty = w == 0 ? 0.056f : (w == 3 ? 0.076f : 0.07f); u32c CASE = RGBA(208, 168, 66, 255), TIP = RGBA(176, 100, 54, 255);
+        for (int i = 0; i < 3; i++) {      /* balas asomando por la boca del cargador: casquillo de laton y punta de cobre */
+            float zz = -0.012f + i * 0.012f, xx = (i & 1) ? 0.0055f : -0.0055f;
+            wbox(xx, ty + 0.012f, zz, 0.0048f, 0.012f, 0.0048f, CASE); wbox(xx, ty + 0.0295f, zz, 0.0036f, 0.0075f, 0.0036f, TIP);
+        }
+    }
+    memcpy(WR, sWR, sizeof sWR); memcpy(WT, sWT, sizeof sWT);
 }
 static void drawVM(int w, float kick, float swap, float u, int reloading, float spd) {
     const VMDef *d = &VMD[w];
     u32c GM = C_GM, GD = C_GD, GL = C_GL, BR = C_BR;
     float k = reloading ? smooth(fminf(u / 0.16f, 1.0f)) * (1 - smooth((u - 0.86f) / 0.14f)) : 0;
     float bobx = sinf(P.bob) * 0.008f * spd, boby = fabsf(cosf(P.bob)) * 0.010f * spd + sinf(orbit * 0 + P.bob * 0.5f) * 0.002f;
+    float iu = (wInsOn && !reloading) ? wInsU : -1.0f, ipo[3] = { 0, 0, 0 };
     float pitch = d->tilt[0] * k + kick * 0.7f, yaw = d->tilt[1] * k + 0.05f - swap * 0.4f, roll = d->tilt[2] * k - swap * 0.5f;
 #ifdef PS2_ONLINE
     /* apuntando: el arma pasa al centro y la mira queda a la altura del ojo; corriendo: arma baja y ladeada */
-    static const float ADSP[5][3] = { { 0, -0.134f, 0.33f }, { 0, -0.200f, 0.165f }, { 0, -0.123f, 0.235f }, { 0, -0.212f, 0.25f }, { 0, -0.135f, 0.062f } };   /* hz = distancia ojo-mira trasera (0,30 m; 0,34 el punto rojo) menos (z de la mira - z del agarre): la mira se ve grande y cerca como en el video y la culata queda detras de la camara */
+    static const float ADSP[5][3] = { { 0, -0.134f, 0.33f }, { 0, -0.200f, 0.165f }, { 0, -0.123f, 0.235f }, { 0, -0.212f, 0.25f }, { 0, -0.135f, 0.162f } };   /* hz = distancia ojo-mira trasera (0,30 m; 0,34 el punto rojo; 0,40 el AK) menos (z de la mira - z del agarre): la mira se ve grande y cerca como en el video y la culata queda detras de la camara */
     float ad = bfAds, sa = bfSprA; bobx *= 1 - 0.85f * ad; boby *= 1 - 0.85f * ad;
     yaw = yaw * (1 - ad) + 0.0f * ad + 0.32f * sa; pitch = pitch * (1 - 0.6f * ad) + (-0.30f) * sa; roll = roll * (1 - ad) + 0.25f * sa;
 #endif
+    float byw = yaw, bpt = pitch, brl = roll;
+    if (iu >= 0) { insPose(iu, &yaw, &pitch, &roll, ipo); byw = yaw; bpt = pitch; brl = roll - 6.2831853f * insFlip(iu); }
     rotMat(yaw, pitch, roll, WR);
     float hx = d->base[0] - 0.09f * k + bobx, hy = d->base[1] - swap * 0.3f + 0.05f * k - kick * 0.02f - boby, hz = d->base[2] - kick * 0.9f - 0.06f * k;
 #ifdef PS2_ONLINE
     hx = lerpf(hx, ADSP[w][0] + bobx, ad * (1 - k)); hy = lerpf(hy, ADSP[w][1] - swap * 0.3f - kick * 0.01f, ad * (1 - k)); hz = lerpf(hz, ADSP[w][2] - kick * 0.5f, ad * (1 - k));
     hx += 0.05f * sa; hy -= 0.07f * sa; hz -= 0.05f * sa;
 #endif
+    if (iu >= 0) { hx += ipo[0]; hy += ipo[1]; hz += ipo[2]; }
     float hp[3] = { hx, hy, hz };
     for (int j = 0; j < 3; j++) WT[j] = hp[j] - (WR[j][0] * d->grip[0] + WR[j][1] * d->grip[1] + WR[j][2] * d->grip[2]);
     float lh[3]; if (reloading) lhandKey(d, u, lh); else { lh[0] = d->key[0][1]; lh[1] = d->key[0][2]; lh[2] = d->key[0][3]; }
     const float AR[3] = { w == 0 ? 0.26f : 0.36f, -0.5f, 0.32f }, AL[3] = { w == 0 ? -0.20f : -0.34f, -0.5f, 0.32f };
     int magSeated = !reloading || u < 0.16f || u >= 0.76f, magOnHand = reloading && ((u >= 0.16f && u < 0.42f) || (u >= 0.5f && u < 0.76f));
+    if (iu >= 0) { magSeated = !(iu >= 0.20f && iu < 0.90f); magOnHand = 0; }
     float pumpZ = 0.33f;
     if (w == 0) {          /* ---- pistola ---- */
         vpDrawVM(magSeated);                                                    /* VP70: 218 triangulos, ver VPM_* */
@@ -12823,6 +12925,7 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
         }
     } else if (w == 2) {   /* ---- escopeta M37: 425 triangulos (SGM + SGP), la bomba sigue a la mano izquierda al montar ---- */
         if (reloading && u >= 0.72f) pumpZ = lh[2];
+        if (iu >= 0) { pumpZ += insPump(iu); lh[2] = pumpZ; }
         sgDrawVM(pumpZ - 0.33f);
     } else if (w == 4) {   /* ---- AK-47: 672 triangulos (AKM_*), el cargador sale al recargar ---- */
         akDrawVM(magSeated);
@@ -12847,7 +12950,8 @@ static void drawVM(int w, float kick, float swap, float u, int reloading, float 
     }
     if (w == 0) handRPistol(AR); else handR(d->grip[0], d->grip[1] + 0.012f, d->grip[2] + 0.004f, AR, w != 2);      /* escopeta: sin cubos negros junto a la empunadura */      /* pistola: manos propias, medidas sobre el VP70 */
     float lx = lh[0], ly = lh[1], lz = lh[2];
-    if (w == 0) handLPistol(lx, ly, lz, AL); else handL(lx, ly, lz, AL, 1);
+    if (iu >= 0 && w != 2) insDrawLeft(d, w, iu, AL, byw, bpt, brl);
+    else if (w == 0) handLPistol(lx, ly, lz, AL); else handL(lx, ly, lz, AL, 1);
     if (w != 2) {
         if (magOnHand) magItem(w, lx, ly + (u < 0.42f ? 0.0f : -0.01f), lz);
         if (reloading && u >= 0.34f && u < 0.52f) { float t = (u - 0.34f) / 0.18f; magItem(w, lx, ly - t * t * 0.55f, lz + t * 0.05f); }
@@ -13015,6 +13119,7 @@ static void drawWeaponModel(void) {
 #endif
 }
 static void drawCross(void) {
+    if (wInsOn) return;      /* inspeccionando el arma: sin mira */
     float cx = SW * 0.5f, cy = SH * 0.5f, t = SH / 448.0f, len = 7 * t, gap = 5 * t, th = 1.2f * t;
     u32c c = CROSS_COL[S.cross];
 #ifdef PS2_ONLINE
@@ -13828,7 +13933,7 @@ void game_frame(const Pad *pd, float dt) {
         drawList(it, NULL, 3, SH * 0.45f);
 #endif
 #ifdef PS2_ONLINE
-        { const char *h[] = { "R1 DISPARAR  L1 APUNTAR  R2 MANTEN/SOLTAR GRANADA  L2 PONER PLACA", "CUADRADO RECARGAR  X SALTAR  L3 CORRER  R3 CAMINAR SILENCIO", "O AGACHARSE  O MANTENIDO ACOSTARSE (O O X LEVANTA)", "TRIANGULO O CRUCETA IZQ/DER: ARMA  L1+CRUCETA IZQ/DER: ASOMARSE", "CRUCETA ARRIBA: GRANADA FRAG/HUMO  L1 CERCA DE PARED: APOYAR ARMA" };
+        { const char *h[] = { "R1 DISPARAR  L1 APUNTAR  R2 MANTEN/SOLTAR GRANADA  L2 PONER PLACA", "CUADRADO RECARGAR  X SALTAR  L3 CORRER  R3 CAMINAR SILENCIO", "O AGACHARSE  O MANTENIDO ACOSTARSE (O O X LEVANTA)  SELECT INSPECCIONAR ARMA", "TRIANGULO O CRUCETA IZQ/DER: ARMA  L1+CRUCETA IZQ/DER: ASOMARSE", "CRUCETA ARRIBA: GRANADA FRAG/HUMO  L1 CERCA DE PARED: APOYAR ARMA" };
           for (int i = 0; i < 5; i++) drawTextC(SW * 0.5f, SH * 0.80f + i * 8 * t, t * 0.65f, h[i], RGBA(143, 160, 166, 255)); }
 #endif
     } else if (mode == M_END) {
